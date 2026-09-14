@@ -4,7 +4,24 @@ import Link from "next/link";
 export default function Footer() {
   return (
     <footer className="border-t border-slate-200/80 bg-white text-slate-600">
-      <div className="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
+        {/* Banner Jaminan Privasi */}
+        <div className="mb-10 rounded-2xl border border-emerald-200/80 bg-gradient-to-r from-emerald-50/90 via-teal-50/50 to-indigo-50/60 p-4 sm:p-4.5 shadow-sm">
+          <div className="flex flex-col sm:flex-row items-center sm:items-start gap-3 text-center sm:text-left">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-sm">
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+              </svg>
+            </div>
+            <div className="space-y-0.5">
+              <p className="text-xs font-bold text-slate-900">Jaminan Privasi & Keamanan Data 100%</p>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                File diproses di browser Anda; hanya fitur AI (hapus background, tingkatkan, buramkan wajah) yang dikirim ke server — dan langsung dihapus setelah diproses.
+              </p>
+            </div>
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 gap-8 md:grid-cols-4">
           {/* Info Brand */}
           <div className="space-y-4 md:col-span-2">

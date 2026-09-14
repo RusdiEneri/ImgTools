@@ -5,6 +5,7 @@ import ToolShell from "@/components/ToolShell";
 import Dropzone from "@/components/Dropzone";
 import { fileToBitmap, convert, download, formatBytes } from "@/lib/image";
 import { encodeGif } from "@/lib/gif";
+import { processQueue, downloadZip } from "@/lib/batch";
 
 interface FrameItem {
   id: string;
@@ -12,16 +13,24 @@ interface FrameItem {
   previewUrl: string;
 }
 
+interface ConvertBatchItem {
+  id: string;
+  file: File;
+  status: "idle" | "processing" | "done" | "error";
+  resultBlob?: Blob;
+  resultUrl?: string;
+  error?: string;
+}
+
 export default function KonversiDariJpgPage() {
-  // Mode: "convert" (JPG ke PNG/GIF statis) atau "gif" (Kumpulan JPG ke GIF Animasi)
+  // Mode: "convert" (JPG ke PNG/GIF statis/WebP) atau "gif" (Kumpulan JPG ke GIF Animasi)
   const [toolMode, setToolMode] = useState<"convert" | "gif">("gif");
 
-  // State Mode 1: Konversi Statis
-  const [singleFile, setSingleFile] = useState<File | null>(null);
-  const [targetFormat, setTargetFormat] = useState<"image/png" | "image/gif">("image/png");
-  const [staticResultBlob, setStaticResultBlob] = useState<Blob | null>(null);
-  const [staticResultUrl, setStaticResultUrl] = useState<string>("");
-  const [isProcessingStatic, setIsProcessingStatic] = useState(false);
+  // State Mode 1: Konversi Format (Multi-File Batch)
+  const [convertItems, setConvertItems] = useState<ConvertBatchItem[]>([]);
+  const [targetFormat, setTargetFormat] = useState<"image/png" | "image/gif" | "image/webp">("image/png");
+  const [isProcessingBatch, setIsProcessingBatch] = useState(false);
+  const [convertGlobalProgress, setConvertGlobalProgress] = useState<number>(0);
 
   // State Mode 2: GIF Animasi
   const [frames, setFrames] = useState<FrameItem[]>([]);
@@ -37,11 +46,25 @@ export default function KonversiDariJpgPage() {
   // Bersihkan URL objek
   useEffect(() => {
     return () => {
-      if (staticResultUrl) URL.revokeObjectURL(staticResultUrl);
+      convertItems.forEach((it) => {
+        if (it.resultUrl) URL.revokeObjectURL(it.resultUrl);
+      });
       if (animatedGifUrl) URL.revokeObjectURL(animatedGifUrl);
       frames.forEach((f) => URL.revokeObjectURL(f.previewUrl));
     };
-  }, [staticResultUrl, animatedGifUrl, frames]);
+  }, [convertItems, animatedGifUrl, frames]);
+
+  // Handler penambahan berkas untuk Konversi Format
+  const handleAddConvertFiles = (files: File[]) => {
+    if (files.length === 0) return;
+    const newItems: ConvertBatchItem[] = files.map((file, idx) => ({
+      id: `${file.name}-${Date.now()}-${idx}`,
+      file,
+      status: "idle",
+    }));
+    setConvertItems((prev) => [...prev, ...newItems]);
+    setErrorMsg("");
+  };
 
   // Handler penambahan berkas untuk GIF Animasi
   const handleAddFrames = (files: File[]) => {
@@ -93,34 +116,117 @@ export default function KonversiDariJpgPage() {
     });
   };
 
-  // Proses Konversi Statis (JPG ke PNG atau GIF 1 Frame)
-  const handleProcessStatic = async () => {
-    if (!singleFile) return;
-    setIsProcessingStatic(true);
+  // Proses Konversi Format Massal (Multi-File via processQueue)
+  const handleProcessBatch = async () => {
+    const pending = convertItems.filter((i) => i.status !== "done");
+    if (pending.length === 0) return;
+
+    setIsProcessingBatch(true);
     setErrorMsg("");
+    setConvertGlobalProgress(0);
 
     try {
-      let result: Blob;
-      if (targetFormat === "image/png") {
-        result = await convert(singleFile, "image/png");
-      } else {
-        // GIF 1 Frame
-        const bmp = await fileToBitmap(singleFile);
-        result = await encodeGif(
-          [{ bitmap: bmp, delay: 1000 }],
-          Math.min(bmp.width, 1080)
-        );
-        bmp.close();
-      }
+      await processQueue(
+        convertItems,
+        async (item, idx) => {
+          if (item.status === "done" && item.resultBlob) return item;
 
-      setStaticResultBlob(result);
-      if (staticResultUrl) URL.revokeObjectURL(staticResultUrl);
-      setStaticResultUrl(URL.createObjectURL(result));
-    } catch (err: unknown) {
-      setErrorMsg(err instanceof Error ? err.message : "Gagal mengonversi gambar.");
+          setConvertItems((prev) =>
+            prev.map((it, i) => (i === idx ? { ...it, status: "processing" } : it))
+          );
+
+          try {
+            let blob: Blob;
+            if (targetFormat === "image/png") {
+              blob = await convert(item.file, "image/png");
+            } else if (targetFormat === "image/webp") {
+              blob = await convert(item.file, "image/webp");
+            } else {
+              // GIF 1 Frame
+              const bmp = await fileToBitmap(item.file);
+              blob = await encodeGif(
+                [{ bitmap: bmp, delay: 1000 }],
+                Math.min(bmp.width, 1080)
+              );
+              bmp.close();
+            }
+
+            const resUrl = URL.createObjectURL(blob);
+            const doneItem: ConvertBatchItem = {
+              ...item,
+              status: "done",
+              resultBlob: blob,
+              resultUrl: resUrl,
+            };
+
+            setConvertItems((prev) =>
+              prev.map((it, i) => (i === idx ? doneItem : it))
+            );
+
+            return doneItem;
+          } catch (err: unknown) {
+            const errItem: ConvertBatchItem = {
+              ...item,
+              status: "error",
+              error: err instanceof Error ? err.message : "Gagal konversi",
+            };
+            setConvertItems((prev) =>
+              prev.map((it, i) => (i === idx ? errItem : it))
+            );
+            return errItem;
+          }
+        },
+        {
+          concurrency: 2,
+          onProgress: (p) => setConvertGlobalProgress(p.percent),
+        }
+      );
     } finally {
-      setIsProcessingStatic(false);
+      setIsProcessingBatch(false);
     }
+  };
+
+  // Unduh satu berkas hasil konversi
+  const handleDownloadSingleConvert = (item: ConvertBatchItem) => {
+    if (!item.resultBlob) return;
+    const dot = item.file.name.lastIndexOf(".");
+    const base = dot !== -1 ? item.file.name.substring(0, dot) : item.file.name;
+    const ext = targetFormat === "image/png" ? ".png" : targetFormat === "image/gif" ? ".gif" : ".webp";
+    download(item.resultBlob, `${base}${ext}`);
+  };
+
+  // Unduh semua berkas hasil konversi dalam format ZIP
+  const handleDownloadConvertZip = async () => {
+    const readyItems = convertItems.filter((i) => i.status === "done" && i.resultBlob);
+    if (readyItems.length === 0) return;
+
+    const ext = targetFormat === "image/png" ? ".png" : targetFormat === "image/gif" ? ".gif" : ".webp";
+    const filesToZip = readyItems.map((item) => {
+      const dot = item.file.name.lastIndexOf(".");
+      const base = dot !== -1 ? item.file.name.substring(0, dot) : item.file.name;
+      return {
+        name: `${base}${ext}`,
+        blob: item.resultBlob as Blob,
+      };
+    });
+
+    await downloadZip(filesToZip, `hasil-konversi-dari-jpg.zip`);
+  };
+
+  const handleRemoveConvertItem = (id: string) => {
+    setConvertItems((prev) => {
+      const target = prev.find((it) => it.id === id);
+      if (target?.resultUrl) URL.revokeObjectURL(target.resultUrl);
+      return prev.filter((it) => it.id !== id);
+    });
+  };
+
+  const handleResetConvert = () => {
+    convertItems.forEach((it) => {
+      if (it.resultUrl) URL.revokeObjectURL(it.resultUrl);
+    });
+    setConvertItems([]);
+    setConvertGlobalProgress(0);
   };
 
   // Proses Pembuatan GIF Animasi dari Kumpulan JPG
@@ -415,115 +521,233 @@ export default function KonversiDariJpgPage() {
           </div>
         )}
 
-        {/* MODE 2: KONVERSI FORMAT STATIS (JPG KE PNG / GIF) */}
+        {/* MODE 2: KONVERSI FORMAT (MULTI-FILE BATCH) */}
         {toolMode === "convert" && (
           <div className="space-y-6">
-            {!singleFile ? (
+            {convertItems.length === 0 ? (
               <Dropzone
-                multiple={false}
+                multiple={true}
                 accept="image/jpeg,image/jpg"
-                onFiles={(files) => {
-                  if (files.length > 0) setSingleFile(files[0]);
-                }}
-                title="Pilih satu foto JPG untuk diubah formatnya"
-                subtitle="Mendukung konversi ke format PNG atau GIF (1 frame)"
+                onFiles={handleAddConvertFiles}
+                title="Pilih foto JPG untuk diubah formatnya (Mendukung Multi-Berkas)"
+                subtitle="Konversi cepat ke format PNG, GIF statis, atau WebP"
               />
             ) : (
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-5">
-                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                  <div>
-                    <h4 className="text-sm font-semibold text-slate-800 truncate max-w-sm">
-                      {singleFile.name}
-                    </h4>
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-6">
+                {/* Header & Format Chooser */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+                  <div className="space-y-1">
+                    <h3 className="text-sm font-semibold text-slate-900">
+                      Daftar Berkas JPG ({convertItems.length} Foto)
+                    </h3>
                     <p className="text-xs text-slate-500">
-                      Ukuran Asal: {formatBytes(singleFile.size)}
+                      Pilih format target di bawah ini, lalu klik &ldquo;Proses Semua&rdquo;.
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSingleFile(null);
-                      setStaticResultBlob(null);
-                    }}
-                    className="text-xs font-semibold text-rose-600 hover:underline"
-                  >
-                    Ganti Foto
-                  </button>
-                </div>
 
-                <div className="space-y-2 max-w-xs">
-                  <label className="text-xs font-semibold text-slate-700">
-                    Pilih Format Target
-                  </label>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="flex items-center gap-2">
+                    <label className="cursor-pointer inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 transition">
+                      <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                      </svg>
+                      Tambah Berkas
+                      <input
+                        type="file"
+                        multiple
+                        accept="image/jpeg,image/jpg"
+                        className="hidden"
+                        onChange={(e) => {
+                          if (e.target.files) {
+                            handleAddConvertFiles(Array.from(e.target.files));
+                            e.target.value = "";
+                          }
+                        }}
+                      />
+                    </label>
+
                     <button
                       type="button"
-                      onClick={() => setTargetFormat("image/png")}
-                      className={`rounded-xl border p-2.5 text-xs font-semibold transition ${
-                        targetFormat === "image/png"
-                          ? "border-indigo-600 bg-indigo-50 text-indigo-700"
-                          : "border-slate-200 text-slate-700 hover:bg-slate-50"
-                      }`}
+                      disabled={isProcessingBatch}
+                      onClick={handleResetConvert}
+                      className="rounded-xl border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-600 hover:bg-rose-50 disabled:opacity-50 transition"
                     >
-                      Format PNG
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setTargetFormat("image/gif")}
-                      className={`rounded-xl border p-2.5 text-xs font-semibold transition ${
-                        targetFormat === "image/gif"
-                          ? "border-indigo-600 bg-indigo-50 text-indigo-700"
-                          : "border-slate-200 text-slate-700 hover:bg-slate-50"
-                      }`}
-                    >
-                      GIF (1 Frame)
+                      Hapus Semua
                     </button>
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  disabled={isProcessingStatic}
-                  onClick={handleProcessStatic}
-                  className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50 transition"
-                >
-                  {isProcessingStatic ? (
-                    <span>Mengonversi...</span>
-                  ) : (
-                    <span>Konversi Sekarang</span>
-                  )}
-                </button>
+                {/* Format Target Buttons */}
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="text-xs font-semibold text-slate-700">Format Target:</span>
+                  <div className="inline-flex rounded-xl bg-slate-100 p-1">
+                    <button
+                      type="button"
+                      disabled={isProcessingBatch}
+                      onClick={() => setTargetFormat("image/png")}
+                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                        targetFormat === "image/png"
+                          ? "bg-white text-indigo-700 shadow-sm"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      PNG (.png)
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isProcessingBatch}
+                      onClick={() => setTargetFormat("image/webp")}
+                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                        targetFormat === "image/webp"
+                          ? "bg-white text-indigo-700 shadow-sm"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      WebP (.webp)
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isProcessingBatch}
+                      onClick={() => setTargetFormat("image/gif")}
+                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                        targetFormat === "image/gif"
+                          ? "bg-white text-indigo-700 shadow-sm"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      GIF 1 Frame (.gif)
+                    </button>
+                  </div>
+                </div>
 
-                {staticResultBlob && staticResultUrl && (
-                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-4 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-emerald-800">
-                        Hasil: {formatBytes(staticResultBlob.size)} ({targetFormat.replace("image/", "").toUpperCase()})
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const ext = targetFormat === "image/png" ? ".png" : ".gif";
-                          const dot = singleFile.name.lastIndexOf(".");
-                          const base = dot !== -1 ? singleFile.name.substring(0, dot) : singleFile.name;
-                          download(staticResultBlob, `${base}${ext}`);
-                        }}
-                        className="rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 shadow-sm"
-                      >
-                        Unduh Hasil
-                      </button>
+                {/* Progress Bar Global */}
+                {isProcessingBatch && (
+                  <div className="space-y-1.5 rounded-xl bg-indigo-50/50 p-4 border border-indigo-100">
+                    <div className="flex items-center justify-between text-xs font-medium text-indigo-900">
+                      <span>Memproses antrean konversi...</span>
+                      <span>{Math.round(convertGlobalProgress)}%</span>
                     </div>
-
-                    <div className="flex justify-center max-h-64 overflow-auto rounded-lg bg-white p-2 border border-slate-200">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={staticResultUrl}
-                        alt="Hasil Konversi"
-                        className="max-h-56 max-w-full object-contain"
+                    <div className="h-2 w-full overflow-hidden rounded-full bg-indigo-100">
+                      <div
+                        className="h-full bg-indigo-600 transition-all duration-300 rounded-full"
+                        style={{ width: `${convertGlobalProgress}%` }}
                       />
                     </div>
                   </div>
                 )}
+
+                {/* List Berkas */}
+                <div className="divide-y divide-slate-100 rounded-xl border border-slate-100 overflow-hidden">
+                  {convertItems.map((item, idx) => (
+                    <div
+                      key={item.id}
+                      className="flex flex-col sm:flex-row sm:items-center justify-between p-3 gap-3 bg-white hover:bg-slate-50/60 transition"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-[11px] font-bold text-slate-600">
+                          {idx + 1}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-semibold text-slate-800 max-w-xs sm:max-w-md">
+                            {item.file.name}
+                          </p>
+                          <p className="text-[11px] text-slate-400">
+                            Ukuran Asal: {formatBytes(item.file.size)}
+                            {item.resultBlob && (
+                              <span className="text-emerald-600 font-medium ml-2">
+                                → {formatBytes(item.resultBlob.size)}
+                              </span>
+                            )}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 self-end sm:self-auto">
+                        {item.status === "idle" && (
+                          <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                            Menunggu
+                          </span>
+                        )}
+                        {item.status === "processing" && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-indigo-100 px-2.5 py-0.5 text-[10px] font-semibold text-indigo-700 animate-pulse">
+                            Memproses...
+                          </span>
+                        )}
+                        {item.status === "done" && (
+                          <>
+                            <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-700">
+                              ✓ Selesai
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadSingleConvert(item)}
+                              className="rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-emerald-700 transition"
+                            >
+                              Unduh
+                            </button>
+                          </>
+                        )}
+                        {item.status === "error" && (
+                          <span className="rounded-full bg-rose-100 px-2.5 py-0.5 text-[10px] font-semibold text-rose-700">
+                            {item.error || "Gagal"}
+                          </span>
+                        )}
+
+                        {!isProcessingBatch && (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveConvertItem(item.id)}
+                            className="text-slate-400 hover:text-rose-500 p-1"
+                            title="Hapus berkas"
+                          >
+                            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Action Bar Bawah */}
+                <div className="flex flex-wrap items-center gap-3 pt-2">
+                  <button
+                    type="button"
+                    disabled={isProcessingBatch}
+                    onClick={handleProcessBatch}
+                    className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-6 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50 transition"
+                  >
+                    {isProcessingBatch ? (
+                      <>
+                        <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                        </svg>
+                        <span>Memproses Semua...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>Proses Semua ({convertItems.length} Foto)</span>
+                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+                        </svg>
+                      </>
+                    )}
+                  </button>
+
+                  {convertItems.some((i) => i.status === "done" && i.resultBlob) && (
+                    <button
+                      type="button"
+                      onClick={handleDownloadConvertZip}
+                      className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-6 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 transition"
+                    >
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                      </svg>
+                      Unduh Semua (ZIP)
+                    </button>
+                  )}
+                </div>
               </div>
             )}
           </div>

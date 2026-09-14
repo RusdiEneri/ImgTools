@@ -7,6 +7,8 @@ import { universalDecode } from "@/lib/formats";
 import { toCanvas, canvasToBlob, download, formatBytes } from "@/lib/image";
 import { rawToJpg } from "@/lib/ai";
 
+import { processQueue, downloadZip, BatchProgress } from "@/lib/batch";
+
 interface ConversionItem {
   id: string;
   file: File;
@@ -21,6 +23,7 @@ export default function KonversiJpgPage() {
   const [items, setItems] = useState<ConversionItem[]>([]);
   const [quality, setQuality] = useState<number>(90);
   const [isProcessingAll, setIsProcessingAll] = useState(false);
+  const [globalProgress, setGlobalProgress] = useState<BatchProgress | null>(null);
 
   // Terima berkas dari Dropzone
   const handleFiles = (incomingFiles: File[]) => {
@@ -37,6 +40,7 @@ export default function KonversiJpgPage() {
     }));
 
     setItems((prev) => [...prev, ...newItems]);
+    setGlobalProgress(null);
   };
 
   // Konversi satu berkas
@@ -102,28 +106,37 @@ export default function KonversiJpgPage() {
     }
   };
 
-  // Jalankan konversi massal
+  // Jalankan konversi massal menggunakan processQueue
   const handleConvertAll = async () => {
-    if (items.length === 0) return;
+    if (items.length === 0 || isProcessingAll) return;
     setIsProcessingAll(true);
 
-    for (let i = 0; i < items.length; i++) {
-      const current = items[i];
-      if (current.status === "done") continue;
+    try {
+      await processQueue(
+        items,
+        async (item, idx) => {
+          if (item.status === "done") return item;
 
-      // Update status ke processing
-      setItems((prev) =>
-        prev.map((it, idx) => (idx === i ? { ...it, status: "processing", progress: 40 } : it))
+          setItems((prev) =>
+            prev.map((it, i) => (i === idx ? { ...it, status: "processing", progress: 40 } : it))
+          );
+
+          const res = await processItem(item, quality);
+
+          setItems((prev) =>
+            prev.map((it, i) => (i === idx ? res : it))
+          );
+
+          return res;
+        },
+        {
+          concurrency: 2,
+          onProgress: (p) => setGlobalProgress(p),
+        }
       );
-
-      const processed = await processItem(current, quality);
-
-      setItems((prev) =>
-        prev.map((it, idx) => (idx === i ? processed : it))
-      );
+    } finally {
+      setIsProcessingAll(false);
     }
-
-    setIsProcessingAll(false);
   };
 
   // Unduh satu file
@@ -134,13 +147,21 @@ export default function KonversiJpgPage() {
     download(item.resultBlob, `${baseName}.jpg`);
   };
 
-  // Unduh semua berkas hasil
-  const handleDownloadAll = async () => {
+  // Unduh semua berkas hasil dalam format ZIP
+  const handleDownloadZip = async () => {
     const readyItems = items.filter((i) => i.status === "done" && i.resultBlob);
-    for (const item of readyItems) {
-      handleDownloadSingle(item);
-      await new Promise((r) => setTimeout(r, 350));
-    }
+    if (readyItems.length === 0) return;
+
+    const filesToZip = readyItems.map((item) => {
+      const dotIndex = item.file.name.lastIndexOf(".");
+      const baseName = dotIndex !== -1 ? item.file.name.substring(0, dotIndex) : item.file.name;
+      return {
+        name: `${baseName}.jpg`,
+        blob: item.resultBlob as Blob,
+      };
+    });
+
+    await downloadZip(filesToZip, "hasil-konversi-jpg.zip");
   };
 
   // Hapus satu item
@@ -219,13 +240,13 @@ export default function KonversiJpgPage() {
                 {doneCount > 0 && (
                   <button
                     type="button"
-                    onClick={handleDownloadAll}
+                    onClick={handleDownloadZip}
                     className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 transition"
                   >
                     <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
                     </svg>
-                    Unduh Semua ({doneCount})
+                    Unduh Semua (ZIP) ({doneCount})
                   </button>
                 )}
               </div>
@@ -253,8 +274,24 @@ export default function KonversiJpgPage() {
               </div>
             </div>
 
-            {/* Tombol Mulai Konversi */}
-            <div>
+            {/* Global Progress Bar */}
+            {globalProgress && (
+              <div className="space-y-1.5 rounded-xl border border-indigo-100 bg-indigo-50/60 p-3">
+                <div className="flex justify-between text-xs font-medium text-indigo-900">
+                  <span>Mengonversi antrean berkas...</span>
+                  <span>{globalProgress.current} / {globalProgress.total} ({globalProgress.percent}%)</span>
+                </div>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-indigo-100">
+                  <div
+                    className="h-full bg-indigo-600 transition-all duration-300 rounded-full"
+                    style={{ width: `${globalProgress.percent}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Tombol Mulai Konversi & Unduh Semua ZIP */}
+            <div className="flex flex-wrap items-center gap-3">
               <button
                 type="button"
                 disabled={isProcessingAll || items.every((i) => i.status === "done")}
@@ -271,13 +308,26 @@ export default function KonversiJpgPage() {
                   </>
                 ) : (
                   <>
-                    <span>Mulai Konversi ke JPG</span>
+                    <span>Proses Semua ({items.length} Berkas)</span>
                     <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
                     </svg>
                   </>
                 )}
               </button>
+
+              {items.some((i) => i.status === "done" && i.resultBlob) && (
+                <button
+                  type="button"
+                  onClick={handleDownloadZip}
+                  className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 transition"
+                >
+                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                  </svg>
+                  <span>Unduh Semua (ZIP)</span>
+                </button>
+              )}
             </div>
 
             {/* List Berkas dengan Progress Bar */}

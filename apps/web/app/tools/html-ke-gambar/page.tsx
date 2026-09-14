@@ -29,7 +29,7 @@ const DEFAULT_HTML_SAMPLE = `<div style="display: flex; flex-direction: column; 
   </div>
 
   <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid rgba(255, 255, 255, 0.2); padding-top: 24px;">
-    <span style="font-size: 18px; font-weight: 600;">Dibuat dengan GambarKu</span>
+    <span style="font-size: 18px; font-weight: 600;">Dibuat dengan ImgTools</span>
     <span style="font-size: 16px; opacity: 0.7;">100% Bebas Chromium</span>
   </div>
 </div>`;
@@ -135,22 +135,20 @@ export default function HtmlKeGambarPage() {
           <button
             type="button"
             onClick={() => setActiveTab("url")}
-            className={`flex-1 rounded-lg py-2 text-xs font-semibold transition ${
-              activeTab === "url"
+            className={`flex-1 rounded-lg py-2 text-xs font-semibold transition ${activeTab === "url"
                 ? "bg-white text-indigo-700 shadow-sm"
                 : "text-slate-600 hover:text-slate-900"
-            }`}
+              }`}
           >
             🌐 Tautan Website (URL)
           </button>
           <button
             type="button"
             onClick={() => setActiveTab("html")}
-            className={`flex-1 rounded-lg py-2 text-xs font-semibold transition ${
-              activeTab === "html"
+            className={`flex-1 rounded-lg py-2 text-xs font-semibold transition ${activeTab === "html"
                 ? "bg-white text-indigo-700 shadow-sm"
                 : "text-slate-600 hover:text-slate-900"
-            }`}
+              }`}
           >
             💻 Kode HTML / CSS
           </button>
@@ -216,11 +214,10 @@ export default function HtmlKeGambarPage() {
                     key={sz.label}
                     type="button"
                     onClick={() => setSelectedSize(sz)}
-                    className={`flex items-center justify-between rounded-xl border p-2.5 text-xs text-left transition ${
-                      selectedSize.label === sz.label
+                    className={`flex items-center justify-between rounded-xl border p-2.5 text-xs text-left transition ${selectedSize.label === sz.label
                         ? "border-indigo-600 bg-indigo-50 text-indigo-700 font-bold"
                         : "border-slate-200 text-slate-700 hover:bg-slate-50"
-                    }`}
+                      }`}
                   >
                     <div>
                       <p className="font-semibold">{sz.label}</p>
@@ -243,11 +240,10 @@ export default function HtmlKeGambarPage() {
                 <button
                   type="button"
                   onClick={() => setFormat("png")}
-                  className={`flex flex-col items-center justify-center rounded-xl border p-4 text-center transition ${
-                    format === "png"
+                  className={`flex flex-col items-center justify-center rounded-xl border p-4 text-center transition ${format === "png"
                       ? "border-indigo-600 bg-indigo-50 text-indigo-700 font-bold ring-1 ring-indigo-300"
                       : "border-slate-200 text-slate-700 hover:bg-slate-50"
-                  }`}
+                    }`}
                 >
                   <span className="text-lg">🖼️</span>
                   <span className="text-xs font-bold mt-1">PNG Image</span>
@@ -257,11 +253,10 @@ export default function HtmlKeGambarPage() {
                 <button
                   type="button"
                   onClick={() => setFormat("svg")}
-                  className={`flex flex-col items-center justify-center rounded-xl border p-4 text-center transition ${
-                    format === "svg"
+                  className={`flex flex-col items-center justify-center rounded-xl border p-4 text-center transition ${format === "svg"
                       ? "border-indigo-600 bg-indigo-50 text-indigo-700 font-bold ring-1 ring-indigo-300"
                       : "border-slate-200 text-slate-700 hover:bg-slate-50"
-                  }`}
+                    }`}
                 >
                   <span className="text-lg">📐</span>
                   <span className="text-xs font-bold mt-1">SVG Vector</span>

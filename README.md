@@ -1,4 +1,4 @@
-# ImgTools (GambarKu) — Monorepo
+# ImgTools (ImgTools) — Monorepo
 
 Platform utilitas pemrosesan dan pengolahan gambar lengkap bertenaga AI dengan arsitektur monorepo.
 
@@ -7,7 +7,7 @@ Platform utilitas pemrosesan dan pengolahan gambar lengkap bertenaga AI dengan a
 ## Struktur Repositori
 
 ```text
-GambarKu/
+ImgTools/
 ├─ apps/
 │  ├─ web/             # Frontend: Next.js 14 (App Router, TypeScript, Tailwind CSS)
 │  └─ ai/              # Backend AI: FastAPI (Python 3.11, Docker, RMBG, Swin2SR, YOLOv8)

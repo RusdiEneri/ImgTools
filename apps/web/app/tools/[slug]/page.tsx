@@ -21,8 +21,14 @@ export function generateMetadata({ params }: ToolPageProps) {
   if (!tool) return { title: "Alat Tidak Ditemukan — ImgTools" };
 
   return {
-    title: `${tool.name} — ImgTools`,
-    description: tool.description,
+    title: `${tool.name} Gambar Online Gratis — ImgTools`,
+    description: `${tool.description} Layanan utilitas pengolahan gambar ${tool.name.toLowerCase()} cepat, gratis, dan aman langsung di browser Anda.`,
+    keywords: [tool.name, "alat gambar online", "edit foto gratis", "imgtools", tool.slug],
+    openGraph: {
+      title: `${tool.name} — Alat Gambar Online | ImgTools`,
+      description: tool.description,
+      type: "website",
+    },
   };
 }
 

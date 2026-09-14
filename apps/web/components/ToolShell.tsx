@@ -1,5 +1,6 @@
 import React from "react";
 import Link from "next/link";
+import HowTo from "./HowTo";
 
 interface ToolShellProps {
   title: string;
@@ -72,6 +73,9 @@ export default function ToolShell({
         <div className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm sm:p-8">
           {children}
         </div>
+
+        {/* 3 Langkah Cara Menggunakan */}
+        <HowTo />
       </div>
     </div>
   );

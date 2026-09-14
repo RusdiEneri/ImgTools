@@ -1,5 +1,5 @@
 {
-  "name": "GambarKu",
+  "name": "ImgTools",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -13,6 +13,7 @@
     "gifenc": "^1.0.3",
     "gifuct-js": "^2.1.2",
     "heic2any": "^0.0.4",
+    "jszip": "^3.10.2",
     "konva": "^9.3.22",
     "next": "14.2.35",
     "react": "^18",
@@ -23,6 +24,7 @@
     "utif2": "^4.1.0"
   },
   "devDependencies": {
+    "@types/jszip": "^3.4.0",
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",

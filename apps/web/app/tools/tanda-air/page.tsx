@@ -4,6 +4,7 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import ToolShell from "@/components/ToolShell";
 import Dropzone from "@/components/Dropzone";
 import { fileToBitmap, toCanvas, canvasToBlob, download, formatBytes } from "@/lib/image";
+import { processQueue, downloadZip, BatchProgress } from "@/lib/batch";
 
 type GridPosition = "tl" | "tc" | "tr" | "ml" | "mc" | "mr" | "bl" | "bc" | "br";
 
@@ -16,7 +17,7 @@ export default function TandaAirPage() {
   const [mode, setMode] = useState<"text" | "logo">("text");
 
   // State Teks
-  const [text, setText] = useState<string>("© GambarKu");
+  const [text, setText] = useState<string>("© ImgTools");
   const [fontFamily, setFontFamily] = useState<string>("sans-serif");
   const [fontSize, setFontSize] = useState<number>(42);
   const [textColor, setTextColor] = useState<string>("#ffffff");
@@ -33,6 +34,7 @@ export default function TandaAirPage() {
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>("");
 
   const currentFile = files[activeFileIndex] || null;
@@ -287,27 +289,37 @@ export default function TandaAirPage() {
     }
   };
 
-  // Unduh seluruh gambar jika multi-file
+  // Unduh seluruh gambar jika multi-file dalam format ZIP
   const handleDownloadAll = async () => {
     if (files.length === 0) return;
     setIsProcessing(true);
     setErrorMsg("");
 
     try {
-      for (let i = 0; i < files.length; i++) {
-        const fileItem = files[i];
-        const blob = await processImageBlob(fileItem);
-        const dotIndex = fileItem.name.lastIndexOf(".");
-        const baseName = dotIndex !== -1 ? fileItem.name.substring(0, dotIndex) : fileItem.name;
-        const ext = dotIndex !== -1 ? fileItem.name.substring(dotIndex) : ".jpg";
-        download(blob, `${baseName}-watermark${ext}`);
-        // Jeda kecil untuk kelancaran download batch browser
-        await new Promise((resolve) => setTimeout(resolve, 400));
-      }
+      const results = await processQueue(
+        files,
+        async (fileItem) => {
+          const blob = await processImageBlob(fileItem);
+          const dotIndex = fileItem.name.lastIndexOf(".");
+          const baseName = dotIndex !== -1 ? fileItem.name.substring(0, dotIndex) : fileItem.name;
+          const ext = dotIndex !== -1 ? fileItem.name.substring(dotIndex) : ".jpg";
+          return {
+            name: `${baseName}-watermark${ext}`,
+            blob,
+          };
+        },
+        {
+          concurrency: 2,
+          onProgress: (p) => setBatchProgress(p),
+        }
+      );
+
+      await downloadZip(results, "hasil-tanda-air.zip");
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : "Gagal memproses batch tanda air.");
     } finally {
       setIsProcessing(false);
+      setBatchProgress(null);
     }
   };
 
@@ -373,11 +385,10 @@ export default function TandaAirPage() {
                     key={`${f.name}-${idx}`}
                     type="button"
                     onClick={() => setActiveFileIndex(idx)}
-                    className={`shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                      activeFileIndex === idx
+                    className={`shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition ${activeFileIndex === idx
                         ? "bg-indigo-600 text-white shadow-sm"
                         : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                    }`}
+                      }`}
                   >
                     #{idx + 1} {f.name.length > 14 ? f.name.substring(0, 12) + "..." : f.name}
                   </button>
@@ -398,22 +409,20 @@ export default function TandaAirPage() {
                     <button
                       type="button"
                       onClick={() => setMode("text")}
-                      className={`rounded-lg py-2 text-xs font-semibold transition ${
-                        mode === "text"
+                      className={`rounded-lg py-2 text-xs font-semibold transition ${mode === "text"
                           ? "bg-white text-indigo-700 shadow-sm"
                           : "text-slate-600 hover:text-slate-900"
-                      }`}
+                        }`}
                     >
                       Mode Teks
                     </button>
                     <button
                       type="button"
                       onClick={() => setMode("logo")}
-                      className={`rounded-lg py-2 text-xs font-semibold transition ${
-                        mode === "logo"
+                      className={`rounded-lg py-2 text-xs font-semibold transition ${mode === "logo"
                           ? "bg-white text-indigo-700 shadow-sm"
                           : "text-slate-600 hover:text-slate-900"
-                      }`}
+                        }`}
                     >
                       Mode Logo / Gambar
                     </button>
@@ -594,11 +603,10 @@ export default function TandaAirPage() {
                         key={btn.id}
                         type="button"
                         onClick={() => setPosition(btn.id as GridPosition)}
-                        className={`h-10 w-10 rounded-lg text-sm font-bold flex items-center justify-center transition ${
-                          position === btn.id
+                        className={`h-10 w-10 rounded-lg text-sm font-bold flex items-center justify-center transition ${position === btn.id
                             ? "bg-indigo-600 text-white shadow-md ring-2 ring-indigo-300"
                             : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                        }`}
+                          }`}
                         title={btn.id.toUpperCase()}
                       >
                         {btn.label}
@@ -621,6 +629,22 @@ export default function TandaAirPage() {
                     Terapkan & Unduh Gambar Aktif
                   </button>
 
+                  {/* Progress Bar Batch */}
+                  {batchProgress && (
+                    <div className="space-y-1 rounded-lg border border-indigo-100 bg-indigo-50/70 p-2.5">
+                      <div className="flex justify-between text-[11px] font-medium text-indigo-900">
+                        <span>Memproses watermark...</span>
+                        <span>{batchProgress.current} / {batchProgress.total} ({batchProgress.percent}%)</span>
+                      </div>
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-indigo-200/50">
+                        <div
+                          className="h-full bg-indigo-600 transition-all duration-300 rounded-full"
+                          style={{ width: `${batchProgress.percent}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
                   {/* Opsi Batch jika multi-file */}
                   {files.length > 1 && (
                     <button
@@ -632,7 +656,7 @@ export default function TandaAirPage() {
                       <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                       </svg>
-                      Terapkan & Unduh Semua ({files.length} Gambar)
+                      Terapkan & Unduh Semua ({files.length} Gambar - ZIP)
                     </button>
                   )}
                 </div>

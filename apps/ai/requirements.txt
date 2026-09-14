@@ -9,3 +9,5 @@ torchvision
 transformers
 accelerate
 huggingface_hub
+ultralytics
+rawpy

@@ -11,98 +11,73 @@ license: mit
 
 # ImgTools AI — Backend Service
 
-Layanan REST API bertenaga AI untuk manipulasi dan segmentasi gambar pada **ImgTools**, dibangun dengan FastAPI dan dioptimalkan untuk deployment pada **Hugging Face Spaces** (Docker CPU).
+Layanan REST API bertenaga AI untuk pemrosesan gambar tingkat lanjut pada **ImgTools**, dibangun dengan FastAPI dan dioptimalkan untuk deployment pada **Hugging Face Spaces** (Docker CPU).
 
 ---
 
 ## Fitur Utama
 
-- **Hapus Latar Belakang (Background Removal)**: Menggunakan model segmentasi canggih `briaai/RMBG-1.4`.
-- **Lazy-Load Model**: Model AI hanya dimuat ke dalam memori saat pertama kali dibutuhkan, dengan pemanasan awal (*warm-up*) saat startup.
-- **Manajemen Sumber Daya & Concurrency**:
-  - `MAX_PIXELS` (default: 24 Megapiksel): Downscale proporsional otomatis untuk mencegah memori meluap (*OOM*).
-  - `MAX_BYTES` (default: 25 MB): Validasi batas unggah berkas dengan HTTP 413.
-  - `MAX_CONCURRENCY` (default: 2): Semaphore asyncio untuk membatasi eksekusi inferensi bersamaan pada CPU.
-- **Normalisasi EXIF**: Memperbaiki orientasi foto secara otomatis sebelum inferensi (*exif transpose*).
-- **Format Respons**: Menghasilkan gambar PNG transparan berkualitas tinggi (RGBA) via StreamingResponse.
+- **Hapus Latar Belakang (Remove Background)**: Segmentasi gambar akurat berbasis model `briaai/RMBG-1.4`.
+- **Tingkatkan Resolusi (Upscale)**: Super-resolution 2x & 4x berbasis `caidas/swin2SR-realworld-sr-x4-64-bsrl`.
+- **Tingkatkan Kualitas (Enhance)**: Peningkatan ketajaman dan detail berbasis `caidas/swin2SR-classical-sr-x2-64` + UnsharpMask.
+- **Buramkan Wajah & Sensor (Face Blur)**: Deteksi wajah otomatis dengan `Bingsu/yolov8n-face` (Ultralytics YOLO) + dukungan area manual (*bounding boxes* JSON) dengan filter Gaussian Blur atau Pixelate.
+- **Konversi RAW ke JPG**: Ekstraksi dan post-processing citra kamera RAW profesional via LibRaw (`rawpy`).
+- **Lazy-Load & Semaphore Caching**: Model ML hanya dimuat ke memori saat pertama kali dibutuhkan, dengan `asyncio.Semaphore` menjaga batas concurrency.
+- **Normalisasi EXIF & Kontrol Memori**: Menormalkan orientasi EXIF secara otomatis dan membatasi ukuran memori dengan aman.
 
 ---
 
-## Spesifikasi Endpoint
+## Daftar Endpoint REST API
 
-### 1. Health Check
-Memeriksa status kesiapan layanan (*liveness/readiness probe*).
-
-- **Method**: `GET`
-- **Path**: `/health`
-- **Response**: `200 OK`
-  ```json
-  {
-    "status": "ok"
-  }
-  ```
+### 1. Health & Status
+- **`GET /health`**: Status pemeriksaan kesehatan sistem (`{"status": "ok"}`).
+- **`GET /`**: Info root dan ringkasan daftar endpoint yang aktif.
 
 ---
 
-### 2. Status & Info Layanan
-Informasi umum mengenai layanan dan daftar endpoint yang tersedia.
-
-- **Method**: `GET`
-- **Path**: `/`
-- **Response**: `200 OK`
-  ```json
-  {
-    "service": "ImgTools AI",
-    "status": "online",
-    "endpoints": {
-      "health": "/health",
-      "remove_bg": "/api/remove-bg"
-    }
-  }
-  ```
+### 2. Hapus Latar Belakang
+- **`POST /api/remove-bg`**
+  - **Body (`multipart/form-data`)**: `file` (File biner citra)
+  - **Respons**: Aliran biner citra `image/png` transparan (RGBA).
 
 ---
 
-### 3. Hapus Latar Belakang (*Remove Background*)
-Menghapus latar belakang gambar dan mengembalikan gambar transparan dalam format PNG.
+### 3. Upscale (Super-Resolution)
+- **`POST /api/upscale`**
+  - **Body / Params**:
+    - `file` (File biner citra)
+    - `scale` (`int`, default: `2`): Faktor perbesaran (`2` atau `4`). Validasi mengembalikan `422` jika tidak valid.
+    - `max_side` (`int`, default: `2048`): Batas dimensi sisi terpanjang sebelum inferensi.
+  - **Respons**: Aliran biner citra `image/png` beresolusi tinggi.
 
-- **Method**: `POST`
-- **Path**: `/api/remove-bg`
-- **Content-Type**: `multipart/form-data`
-- **Form Data**:
-  - `file`: Berkas gambar biner (JPEG, PNG, WEBP, BMP, dsb.)
-- **Respons Berhasil**: `200 OK`
-  - `Content-Type`: `image/png`
-  - *Body*: Aliran biner citra PNG dengan alpha channel (transparan).
-- **Respons Kesalahan**:
-  - `413 Payload Too Large`: Jika ukuran berkas melebihi `MAX_BYTES` (25 MB).
-  - `415 Unsupported Media Type`: Jika format berkas tidak dikenali atau korup.
-  - `500 Internal Server Error`: Jika terjadi kesalahan saat inferensi model.
+---
 
-#### Contoh Request (cURL):
-```bash
-curl -X POST "http://localhost:7860/api/remove-bg" \
-  -H "accept: image/png" \
-  -F "file=@foto_contoh.jpg" \
-  --output hasil_transparan.png
-```
+### 4. Enhance (Peningkatan Kualitas)
+- **`POST /api/enhance`**
+  - **Body / Params**:
+    - `file` (File biner citra)
+    - `strength` (`float`, default: `1.0`): Kekuatan penajaman (diterapkan pada filter UnsharpMask).
+  - **Respons**: Aliran biner citra `image/png` tajam dan jernih.
 
-#### Contoh Request (JavaScript Fetch):
-```javascript
-const formData = new FormData();
-formData.append("file", fileInput.files[0]);
+---
 
-const response = await fetch("http://localhost:7860/api/remove-bg", {
-  method: "POST",
-  body: formData,
-});
+### 5. Buramkan Wajah / Sensor Area
+- **`POST /api/face-blur`**
+  - **Body / Params**:
+    - `file` (File biner citra)
+    - `blur` (`int`, default: `25`): Radius blur atau ukuran pikselasi.
+    - `mode` (`string`, default: `"gaussian"`): Mode sensor (`"gaussian"` atau `"pixelate"`).
+    - `conf` (`float`, default: `0.35`): Ambang batas confidence deteksi wajah YOLO.
+    - `boxes` (`string` JSON, opsional): List area manual `[x, y, w, h]` atau `[[x, y, w, h], ...]`.
+  - **Respons**: Aliran biner citra `image/png` dengan area wajah/sensor yang diburamkan.
 
-if (response.ok) {
-  const blob = await response.blob();
-  const imageUrl = URL.createObjectURL(blob);
-  // tampilkan gambar atau unduh
-}
-```
+---
+
+### 6. Konversi RAW ke JPG
+- **`POST /api/raw-to-jpg`**
+  - **Body**: `file` (File citra kamera RAW, misal: CR2, NEF, ARW, DNG, dsb.)
+  - **Respons**: Aliran biner citra `image/jpeg` dengan kualitas 92.
+  - **Error**: `422 Unprocessable Entity` jika berkas RAW tidak valid atau korup.
 
 ---
 
@@ -110,37 +85,18 @@ if (response.ok) {
 
 | Variabel | Tipe | Default | Deskripsi |
 | :--- | :--- | :--- | :--- |
-| `ALLOWED_ORIGINS` | string | `http://localhost:3000` | Daftar domain yang diizinkan untuk CORS (pisahkan dengan tanda koma). |
-| `MAX_PIXELS` | integer | `24000000` | Batas maksimum jumlah piksel gambar (24 MP). Gambar yang lebih besar akan di-downscale proporsional. |
-| `MAX_BYTES` | integer | `26214400` | Batas ukuran maksimum berkas yang diunggah (25 MB). |
-| `MAX_CONCURRENCY` | integer | `2` | Jumlah maksimum inferensi model yang berjalan serentak. |
+| `ALLOWED_ORIGINS` | string | `http://localhost:3000` | Domain CORS yang diizinkan (pisahkan dengan koma). |
+| `MAX_PIXELS` | integer | `24000000` | Batas piksel maksimal (24 MP). Gambar di-downscale proporsional jika melampaui. |
+| `MAX_BYTES` | integer | `26214400` | Batas ukuran berkas (25 MB, HTTP 413 jika melebihi). |
+| `MAX_CONCURRENCY` | integer | `2` | Jumlah maksimum inferensi paralel. |
 
 ---
 
 ## Menjalankan Layanan
 
-### Menggunakan Docker (Rekomendasi)
-
+### Menggunakan Docker
 ```bash
-# 1. Build docker image
 docker build -t imgtools-ai .
-
-# 2. Jalankan container pada port 7860
 docker run -p 7860:7860 -e ALLOWED_ORIGINS="http://localhost:3000" imgtools-ai
 ```
-
-### Menggunakan Python Lokal
-
-Pastikan Anda menggunakan Python 3.11:
-
-```bash
-# 1. Buat dan aktifkan virtual environment
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-
-# 2. Pasang dependensi
-pip install -r requirements.txt
-
-# 3. Jalankan server Uvicorn
-uvicorn main:app --host 0.0.0.0 --port 7860 --reload
-```
+Dokumentasi interaktif OpenAPI / Swagger dapat diakses di `http://localhost:7860/docs`.

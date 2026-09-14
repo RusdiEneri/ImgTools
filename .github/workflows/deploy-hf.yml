@@ -1,0 +1,42 @@
+name: Deploy AI Backend to Hugging Face Space
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'apps/ai/**'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Subtree Push to HF Space
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git User
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Subtree Split and Push to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_USER: ${{ secrets.HF_USER }}
+          HF_SPACE: ${{ secrets.HF_SPACE }}
+        run: |
+          if [ -z "$HF_TOKEN" ] || [ -z "$HF_USER" ] || [ -z "$HF_SPACE" ]; then
+            echo "Error: Pastikan secrets HF_TOKEN, HF_USER, dan HF_SPACE telah dikonfigurasi di GitHub Repository Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
+          echo "Melakukan subtree split untuk apps/ai..."
+          git branch -D hf-ai 2>/dev/null || true
+          git subtree split --prefix apps/ai -b hf-ai
+
+          echo "Mengirim commit ke Hugging Face Space ($HF_USER/$HF_SPACE)..."
+          git push --force "https://x-token:${HF_TOKEN}@hf.co/spaces/${HF_USER}/${HF_SPACE}" hf-ai:main

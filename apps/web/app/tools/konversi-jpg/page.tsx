@@ -5,6 +5,7 @@ import ToolShell from "@/components/ToolShell";
 import Dropzone from "@/components/Dropzone";
 import { universalDecode } from "@/lib/formats";
 import { toCanvas, canvasToBlob, download, formatBytes } from "@/lib/image";
+import { rawToJpg } from "@/lib/ai";
 
 interface ConversionItem {
   id: string;
@@ -41,7 +42,24 @@ export default function KonversiJpgPage() {
   // Konversi satu berkas
   const processItem = async (item: ConversionItem, currentQuality: number): Promise<ConversionItem> => {
     try {
-      // Step 1: Mulai decoding
+      const ext = item.file.name.slice(item.file.name.lastIndexOf(".")).toLowerCase();
+      const isRaw = [".raw", ".cr2", ".nef", ".arw", ".dng"].includes(ext);
+
+      // Jika format kamera RAW, alihkan langsung ke server AI (rawpy/LibRaw)
+      if (isRaw) {
+        const blob = await rawToJpg(item.file);
+        const url = URL.createObjectURL(blob);
+        return {
+          ...item,
+          status: "done",
+          progress: 100,
+          resultBlob: blob,
+          resultUrl: url,
+          errorMsg: "",
+        };
+      }
+
+      // Step 1: Mulai decoding di browser
       const bmp = await universalDecode(item.file);
 
       // Step 2: Render ke kanvas dengan latar putih
@@ -69,13 +87,17 @@ export default function KonversiJpgPage() {
         errorMsg: "",
       };
     } catch (err: unknown) {
+      const msg =
+        err instanceof Error
+          ? (err as { detail?: string }).detail || err.message
+          : "Gagal mengonversi gambar.";
       return {
         ...item,
         status: "error",
         progress: 100,
         resultBlob: null,
         resultUrl: "",
-        errorMsg: err instanceof Error ? err.message : "Gagal mengonversi gambar.",
+        errorMsg: msg,
       };
     }
   };
@@ -157,7 +179,7 @@ export default function KonversiJpgPage() {
               Dukungan Format Kamera RAW & Photoshop PSD
             </p>
             <p className="text-slate-600">
-              Format profesional seperti RAW (.CR2, .NEF, .ARW, .DNG) dan Adobe Photoshop (.PSD) dikirim ke server AI untuk pemrosesan fidelitas tinggi (dihubungkan nanti).
+              Format profesional seperti RAW (.CR2, .NEF, .ARW, .DNG) otomatis dikirim ke backend server AI (LibRaw/rawpy) untuk konversi fidelitas tinggi ke JPG.
             </p>
           </div>
         </div>
@@ -165,10 +187,10 @@ export default function KonversiJpgPage() {
         {/* Dropzone Multi-File */}
         <Dropzone
           multiple={true}
-          accept="image/*,.heic,.heif,.tiff,.tif,.svg"
+          accept="image/*,.heic,.heif,.tiff,.tif,.svg,.raw,.cr2,.nef,.arw,.dng"
           onFiles={handleFiles}
           title="Tarik & letakkan berkas untuk dikonversi ke JPG"
-          subtitle="Mendukung HEIC, TIFF, SVG, WEBP, PNG, GIF, BMP, dan format grafis lainnya"
+          subtitle="Mendukung HEIC, TIFF, SVG, WEBP, PNG, GIF, BMP, dan berkas RAW kamera (.CR2, .NEF, .ARW, .DNG)"
         />
 
         {/* Panel Daftar Berkas & Pengaturan */}

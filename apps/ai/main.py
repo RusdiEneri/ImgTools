@@ -393,14 +393,15 @@ async def remove_background(file: UploadFile = File(...)):
             pred = await loop.run_in_executor(None, _infer, input_tensor)
 
             # Konversi tensor ke PIL mask grayscale
-            # pred shape: [1, 1, H, W] atau [1, H, W]
-            pred = pred.squeeze().cpu()
-            # Normalisasi ke [0, 1]
-            pred_min = pred.min()
-            pred_max = pred.max()
-            if pred_max > pred_min:
-                pred = (pred - pred_min) / (pred_max - pred_min)
+            # BriaRMBG mengeluarkan logits — harus sigmoid dulu!
+            pred = pred.squeeze().cpu()  # shape: [H, W] atau [1, H, W]
+            if pred.dim() == 3:
+                pred = pred.squeeze(0)  # [H, W]
 
+            # Terapkan sigmoid untuk konversi logits → probabilitas [0, 1]
+            pred = torch.sigmoid(pred)
+
+            # Konversi ke numpy uint8 [0, 255]
             mask_np = (pred.numpy() * 255).astype(np.uint8)
             mask = Image.fromarray(mask_np, mode="L")
 

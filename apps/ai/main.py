@@ -53,30 +53,56 @@ def model(name: str):
         device = 0 if torch.cuda.is_available() else -1
         logger.info(f"Memuat model '{name}' ke memori (device={device})...")
         if name == "remove-bg":
-            # Load RMBG-1.4 langsung via torch (bypass bug transformers >=4.46
-            # 'BriaRMBG' has no attribute 'all_tied_weights_keys')
-            import torch
+            # Load RMBG-1.4 langsung via torch + BriaRMBG architecture
+            # Fix: torch.load('model.pth') mengembalikan OrderedDict (state dict),
+            # bukan model object. Harus buat instance BriaRMBG dulu lalu load_state_dict.
+            import torch, importlib.util
             from torchvision import transforms
             from huggingface_hub import hf_hub_download
 
-            # Download model file
-            model_path = hf_hub_download(
-                repo_id="briaai/RMBG-1.4",
-                filename="model.pth",
-            )
+            cuda_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-            # Import arsitektur dari repo (trust_remote_code)
+            # Coba AutoModelForImageSegmentation (transformers < 4.46)
+            rmbg = None
             try:
                 from transformers import AutoModelForImageSegmentation
                 rmbg = AutoModelForImageSegmentation.from_pretrained(
                     "briaai/RMBG-1.4",
                     trust_remote_code=True,
                 )
-            except Exception:
-                # Fallback: load via torch.load jika AutoModel gagal
-                rmbg = torch.load(model_path, map_location="cpu", weights_only=False)
+                logger.info("RMBG-1.4 dimuat via AutoModelForImageSegmentation.")
+            except Exception as e:
+                logger.warning(f"AutoModel gagal ({e}), fallback ke BriaRMBG manual.")
 
-            cuda_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            if rmbg is None:
+                # Download arsitektur BriaRMBG dari HuggingFace
+                briarmbg_path = hf_hub_download(
+                    repo_id="briaai/RMBG-1.4",
+                    filename="briarmbg.py",
+                )
+                # Import kelas BriaRMBG secara dinamis
+                spec = importlib.util.spec_from_file_location("briarmbg", briarmbg_path)
+                briarmbg_mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(briarmbg_mod)
+                BriaRMBG = briarmbg_mod.BriaRMBG
+
+                # Download weights (model.pth = state dict, bukan full model)
+                model_path = hf_hub_download(
+                    repo_id="briaai/RMBG-1.4",
+                    filename="model.pth",
+                )
+
+                # Buat instance model kosong, lalu isi dengan state dict
+                rmbg = BriaRMBG()
+                state_dict = torch.load(model_path, map_location="cpu", weights_only=False)
+                if isinstance(state_dict, dict):
+                    rmbg.load_state_dict(state_dict)
+                    logger.info("RMBG-1.4 dimuat via BriaRMBG + load_state_dict.")
+                else:
+                    # model.pth ternyata full model object (jarang terjadi)
+                    rmbg = state_dict
+                    logger.info("RMBG-1.4 dimuat via torch.load (full model object).")
+
             rmbg = rmbg.to(cuda_device)
             rmbg.eval()
 
@@ -88,7 +114,7 @@ def model(name: str):
             ])
 
             _models[name] = (rmbg, preprocess, cuda_device)
-            logger.info("Model 'remove-bg' (briaai/RMBG-1.4) berhasil dimuat via torch.")
+            logger.info("Model 'remove-bg' (briaai/RMBG-1.4) berhasil dimuat dan siap.")
         elif name == "upscale":
             from transformers import pipeline
 

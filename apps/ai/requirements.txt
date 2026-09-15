@@ -1,3 +1,4 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
 fastapi
 uvicorn[standard]
 python-multipart
@@ -10,5 +11,3 @@ accelerate
 huggingface_hub
 ultralytics
 rawpy
-gradio
-spaces

@@ -8,7 +8,7 @@ from typing import Dict, Any, Optional, Literal, List
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from PIL import Image, ImageOps, ImageFilter
 
 # Konfigurasi Logging
@@ -217,11 +217,13 @@ def health_check():
 
 
 @app.get("/")
-def root():
+def root(request: Request):
     """
     Root info endpoint menampilkan status dan route yang tersedia.
+    Mengembalikan tampilan HTML yang informatif jika diakses lewat browser.
     """
-    return {
+    accept = request.headers.get("accept", "")
+    info = {
         "service": "ImgTools AI",
         "status": "online",
         "endpoints": {
@@ -231,8 +233,52 @@ def root():
             "enhance": "/api/enhance",
             "face_blur": "/api/face-blur",
             "raw_to_jpg": "/api/raw-to-jpg",
+            "docs": "/docs",
         },
     }
+    if "text/html" not in accept:
+        return JSONResponse(info)
+
+    html_content = """<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ImgTools AI Service</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b0f19; color: #f1f5f9; padding: 40px 20px; max-width: 800px; margin: 0 auto; line-height: 1.6; }
+        .card { background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 32px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+        .badge { display: inline-flex; align-items: center; gap: 6px; background: rgba(16,185,129,0.15); color: #34d399; padding: 4px 12px; border-radius: 9999px; font-size: 13px; font-weight: 600; }
+        .badge::before { content: ""; width: 8px; height: 8px; background: #10b981; border-radius: 50%; display: inline-block; }
+        h1 { margin-top: 16px; margin-bottom: 8px; font-size: 26px; }
+        p { color: #94a3b8; font-size: 14px; margin-bottom: 24px; }
+        ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+        li { background: #0f172a; border: 1px solid #1e293b; padding: 12px 16px; border-radius: 10px; font-size: 13px; display: flex; justify-content: space-between; align-items: center; }
+        code { background: #334155; color: #a5b4fc; padding: 2px 8px; border-radius: 6px; font-family: monospace; font-size: 12px; }
+        .btn { display: inline-block; margin-top: 24px; background: #4f46e5; color: white; text-decoration: none; padding: 12px 24px; border-radius: 10px; font-size: 14px; font-weight: 600; transition: 0.2s; }
+        .btn:hover { background: #4338ca; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="badge">Sistem Aktif (Online)</div>
+        <h1>🖼️ ImgTools AI — Backend Service</h1>
+        <p>Layanan REST API bertenaga AI untuk aplikasi <strong>ImgTools</strong> pada Hugging Face Spaces (CPU Basic).</p>
+        
+        <ul>
+            <li><span>Pemeriksaan Kesehatan (Health Check)</span> <code>GET /health</code></li>
+            <li><span>Hapus Latar Belakang (RMBG-1.4)</span> <code>POST /api/remove-bg</code></li>
+            <li><span>Tingkatkan Resolusi (Swin2SR 2x/4x)</span> <code>POST /api/upscale</code></li>
+            <li><span>Tingkatkan Ketajaman (Swin2SR)</span> <code>POST /api/enhance</code></li>
+            <li><span>Buramkan Wajah (YOLO Face)</span> <code>POST /api/face-blur</code></li>
+            <li><span>Konversi RAW ke JPG (LibRaw)</span> <code>POST /api/raw-to-jpg</code></li>
+        </ul>
+
+        <a href="/docs" class="btn">📖 Buka Dokumentasi Interaktif (/docs) &rarr;</a>
+    </div>
+</body>
+</html>"""
+    return HTMLResponse(content=html_content)
 
 
 @app.post("/api/remove-bg")

@@ -53,15 +53,42 @@ def model(name: str):
         device = 0 if torch.cuda.is_available() else -1
         logger.info(f"Memuat model '{name}' ke memori (device={device})...")
         if name == "remove-bg":
-            from transformers import pipeline
+            # Load RMBG-1.4 langsung via torch (bypass bug transformers >=4.46
+            # 'BriaRMBG' has no attribute 'all_tied_weights_keys')
+            import torch
+            from torchvision import transforms
+            from huggingface_hub import hf_hub_download
 
-            _models[name] = pipeline(
-                "image-segmentation",
-                model="briaai/RMBG-1.4",
-                device=device,
-                trust_remote_code=True,
+            # Download model file
+            model_path = hf_hub_download(
+                repo_id="briaai/RMBG-1.4",
+                filename="model.pth",
             )
-            logger.info("Model 'remove-bg' (briaai/RMBG-1.4) berhasil dimuat.")
+
+            # Import arsitektur dari repo (trust_remote_code)
+            try:
+                from transformers import AutoModelForImageSegmentation
+                rmbg = AutoModelForImageSegmentation.from_pretrained(
+                    "briaai/RMBG-1.4",
+                    trust_remote_code=True,
+                )
+            except Exception:
+                # Fallback: load via torch.load jika AutoModel gagal
+                rmbg = torch.load(model_path, map_location="cpu", weights_only=False)
+
+            cuda_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            rmbg = rmbg.to(cuda_device)
+            rmbg.eval()
+
+            # Simpan transform bersama model dalam tuple
+            preprocess = transforms.Compose([
+                transforms.Resize((1024, 1024)),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+            ])
+
+            _models[name] = (rmbg, preprocess, cuda_device)
+            logger.info("Model 'remove-bg' (briaai/RMBG-1.4) berhasil dimuat via torch.")
         elif name == "upscale":
             from transformers import pipeline
 
@@ -294,38 +321,48 @@ async def remove_background(file: UploadFile = File(...)):
     """
     async with concurrency_semaphore:
         try:
+            import torch
+            import numpy as np
+            from torchvision import transforms
+
             # Baca gambar asli
             orig_img = await read_image(file)
             orig_w, orig_h = orig_img.size
 
-            # Konversi ke RGB untuk inferensi
+            # Konversi ke RGB
             rgb_img = orig_img.convert("RGB")
 
-            # Resize ke 1024x1024 untuk model
-            img_1024 = rgb_img.resize((1024, 1024), Image.Resampling.BILINEAR)
+            # Ambil model, transform, device dari cache
+            rmbg, preprocess, cuda_device = model("remove-bg")
 
-            # Inferensi model remove-bg
-            pipe = model("remove-bg")
+            # Preprocessing: tensor shape [1, 3, 1024, 1024]
+            input_tensor = preprocess(rgb_img).unsqueeze(0).to(cuda_device)
+
+            # Inferensi (jalankan di executor agar tidak blokir event loop)
+            def _infer(inp):
+                with torch.no_grad():
+                    out = rmbg(inp)
+                # Output bisa berupa tuple, list, atau tensor
+                if isinstance(out, (tuple, list)):
+                    out = out[0]
+                if isinstance(out, (tuple, list)):
+                    out = out[0]
+                return out
+
             loop = asyncio.get_running_loop()
-            output = await loop.run_in_executor(None, pipe, img_1024)
+            pred = await loop.run_in_executor(None, _infer, input_tensor)
 
-            # Ekstraksi mask hasil segmentasi
-            if isinstance(output, list) and len(output) > 0:
-                first = output[0]
-                mask_candidate = first["mask"] if isinstance(first, dict) and "mask" in first else first
-            else:
-                mask_candidate = output
+            # Konversi tensor ke PIL mask grayscale
+            # pred shape: [1, 1, H, W] atau [1, H, W]
+            pred = pred.squeeze().cpu()
+            # Normalisasi ke [0, 1]
+            pred_min = pred.min()
+            pred_max = pred.max()
+            if pred_max > pred_min:
+                pred = (pred - pred_min) / (pred_max - pred_min)
 
-            # Dapatkan channel grayscale (L) dari mask
-            if isinstance(mask_candidate, Image.Image):
-                if mask_candidate.mode == "RGBA":
-                    mask = mask_candidate.split()[-1]
-                elif mask_candidate.mode != "L":
-                    mask = mask_candidate.convert("L")
-                else:
-                    mask = mask_candidate
-            else:
-                raise HTTPException(status_code=500, detail="Format output model tidak valid.")
+            mask_np = (pred.numpy() * 255).astype(np.uint8)
+            mask = Image.fromarray(mask_np, mode="L")
 
             # Resize mask balik ke ukuran gambar asli
             resized_mask = mask.resize((orig_w, orig_h), Image.Resampling.BILINEAR)

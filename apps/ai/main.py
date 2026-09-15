@@ -53,16 +53,16 @@ def model(name: str):
         device = 0 if torch.cuda.is_available() else -1
         logger.info(f"Memuat model '{name}' ke memori (device={device})...")
         if name == "remove-bg":
-            # Load RMBG-1.4 langsung via torch + BriaRMBG architecture
-            # Fix: torch.load('model.pth') mengembalikan OrderedDict (state dict),
-            # bukan model object. Harus buat instance BriaRMBG dulu lalu load_state_dict.
-            import torch, importlib.util
+            # Load RMBG-1.4: buat proper package context agar relative import berhasil
+            # briarmbg.py menggunakan `from .MyConfig import ...` sehingga perlu
+            # dimuat sebagai bagian dari package, bukan modul standalone.
+            import torch, importlib.util, types, sys as _sys
             from torchvision import transforms
             from huggingface_hub import hf_hub_download
 
             cuda_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-            # Coba AutoModelForImageSegmentation (transformers < 4.46)
+            # Coba AutoModelForImageSegmentation terlebih dulu
             rmbg = None
             try:
                 from transformers import AutoModelForImageSegmentation
@@ -75,38 +75,49 @@ def model(name: str):
                 logger.warning(f"AutoModel gagal ({e}), fallback ke BriaRMBG manual.")
 
             if rmbg is None:
-                # Download arsitektur BriaRMBG dari HuggingFace
-                briarmbg_path = hf_hub_download(
-                    repo_id="briaai/RMBG-1.4",
-                    filename="briarmbg.py",
-                )
-                # Import kelas BriaRMBG secara dinamis
-                spec = importlib.util.spec_from_file_location("briarmbg", briarmbg_path)
-                briarmbg_mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(briarmbg_mod)
-                BriaRMBG = briarmbg_mod.BriaRMBG
+                # Download KEDUA file (briarmbg.py butuh MyConfig.py via relative import)
+                briarmbg_path = hf_hub_download(repo_id="briaai/RMBG-1.4", filename="briarmbg.py")
+                myconfig_path = hf_hub_download(repo_id="briaai/RMBG-1.4", filename="MyConfig.py")
+                model_path    = hf_hub_download(repo_id="briaai/RMBG-1.4", filename="model.pth")
 
-                # Download weights (model.pth = state dict, bukan full model)
-                model_path = hf_hub_download(
-                    repo_id="briaai/RMBG-1.4",
-                    filename="model.pth",
-                )
+                # Buat package virtual 'briaai_rmbg' di sys.modules
+                # sehingga `from .MyConfig import ...` di briarmbg.py dapat di-resolve
+                pkg_name = "briaai_rmbg"
+                if pkg_name not in _sys.modules:
+                    pkg = types.ModuleType(pkg_name)
+                    pkg.__path__ = []
+                    pkg.__package__ = pkg_name
+                    _sys.modules[pkg_name] = pkg
 
-                # Buat instance model kosong, lalu isi dengan state dict
+                # Load MyConfig sebagai briaai_rmbg.MyConfig
+                mc_spec = importlib.util.spec_from_file_location(f"{pkg_name}.MyConfig", myconfig_path)
+                mc_mod  = importlib.util.module_from_spec(mc_spec)
+                mc_mod.__package__ = pkg_name
+                _sys.modules[f"{pkg_name}.MyConfig"] = mc_mod
+                mc_spec.loader.exec_module(mc_mod)
+
+                # Load briarmbg sebagai briaai_rmbg.briarmbg
+                br_spec = importlib.util.spec_from_file_location(f"{pkg_name}.briarmbg", briarmbg_path)
+                br_mod  = importlib.util.module_from_spec(br_spec)
+                br_mod.__package__ = pkg_name
+                _sys.modules[f"{pkg_name}.briarmbg"] = br_mod
+                br_spec.loader.exec_module(br_mod)
+
+                BriaRMBG = br_mod.BriaRMBG
+
+                # Load state dict ke dalam instance BriaRMBG
                 rmbg = BriaRMBG()
                 state_dict = torch.load(model_path, map_location="cpu", weights_only=False)
                 if isinstance(state_dict, dict):
                     rmbg.load_state_dict(state_dict)
                     logger.info("RMBG-1.4 dimuat via BriaRMBG + load_state_dict.")
                 else:
-                    # model.pth ternyata full model object (jarang terjadi)
                     rmbg = state_dict
-                    logger.info("RMBG-1.4 dimuat via torch.load (full model object).")
+                    logger.info("RMBG-1.4 dimuat via torch.load (full model).")
 
             rmbg = rmbg.to(cuda_device)
             rmbg.eval()
 
-            # Simpan transform bersama model dalam tuple
             preprocess = transforms.Compose([
                 transforms.Resize((1024, 1024)),
                 transforms.ToTensor(),
@@ -116,23 +127,26 @@ def model(name: str):
             _models[name] = (rmbg, preprocess, cuda_device)
             logger.info("Model 'remove-bg' (briaai/RMBG-1.4) berhasil dimuat dan siap.")
         elif name == "upscale":
-            from transformers import pipeline
+            # Gunakan Swin2SR API langsung (bukan pipeline yang sering error dengan model ini)
+            from transformers import Swin2SRForImageSuperResolution, Swin2SRImageProcessor
+            import torch
 
-            _models[name] = pipeline(
-                "image-to-image",
-                model="caidas/swin2SR-realworld-sr-x4-64-bsrl",
-                device=device,
-            )
-            logger.info("Model 'upscale' (caidas/swin2SR-realworld-sr-x4-64-bsrl) berhasil dimuat.")
+            cuda_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            processor = Swin2SRImageProcessor.from_pretrained("caidas/swin2SR-realworld-sr-x4-64-bsrl-conv")
+            sr_model  = Swin2SRForImageSuperResolution.from_pretrained("caidas/swin2SR-realworld-sr-x4-64-bsrl-conv")
+            sr_model  = sr_model.to(cuda_device).eval()
+            _models[name] = (sr_model, processor, cuda_device)
+            logger.info("Model 'upscale' (swin2SR-realworld-sr-x4-64-bsrl-conv) berhasil dimuat.")
         elif name == "enhance":
-            from transformers import pipeline
+            from transformers import Swin2SRForImageSuperResolution, Swin2SRImageProcessor
+            import torch
 
-            _models[name] = pipeline(
-                "image-to-image",
-                model="caidas/swin2SR-classical-sr-x2-64",
-                device=device,
-            )
-            logger.info("Model 'enhance' (caidas/swin2SR-classical-sr-x2-64) berhasil dimuat.")
+            cuda_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            processor = Swin2SRImageProcessor.from_pretrained("caidas/swin2SR-classical-sr-x2-64")
+            sr_model  = Swin2SRForImageSuperResolution.from_pretrained("caidas/swin2SR-classical-sr-x2-64")
+            sr_model  = sr_model.to(cuda_device).eval()
+            _models[name] = (sr_model, processor, cuda_device)
+            logger.info("Model 'enhance' (swin2SR-classical-sr-x2-64) berhasil dimuat.")
         elif name == "face":
             from ultralytics import YOLO
 
@@ -442,25 +456,30 @@ async def upscale(
             img.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
             rgb_img = img.convert("RGB")
 
-            # Jalankan pipeline upscale swin2SR
-            pipe = model("upscale")
-            loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(None, pipe, rgb_img)
+            # Jalankan Swin2SR upscale langsung (bukan pipeline)
+            import torch
+            sr_model, processor, cuda_device = model("upscale")
 
-            if isinstance(result, list) and len(result) > 0:
-                out_img = result[0].get("image", result[0]) if isinstance(result[0], dict) else result[0]
-            elif isinstance(result, dict) and "image" in result:
-                out_img = result["image"]
-            else:
-                out_img = result
+            def _run_upscale(img_pil):
+                inputs = processor(img_pil, return_tensors="pt").pixel_values.to(cuda_device)
+                with torch.no_grad():
+                    outputs = sr_model(pixel_values=inputs)
+                sr_tensor = outputs.reconstruction.squeeze().cpu().clamp(0, 1)
+                # sr_tensor shape: [C, H, W]
+                import numpy as np
+                arr = (sr_tensor.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+                return Image.fromarray(arr)
+
+            loop = asyncio.get_running_loop()
+            out_img = await loop.run_in_executor(None, _run_upscale, rgb_img)
 
             if not isinstance(out_img, Image.Image):
                 raise ValueError("Output model tidak menghasilkan PIL Image yang valid.")
 
-            # Model default menghasilkan 4x upscale; jika scale 2, resize proporsional
+            # Model 4x upscale; jika user minta 2x, resize proporsional
             if scale == 2:
-                target_w = max(1, img.width * 2)
-                target_h = max(1, img.height * 2)
+                target_w = max(1, rgb_img.width * 2)
+                target_h = max(1, rgb_img.height * 2)
                 out_img = out_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
             return png_response(out_img)
@@ -494,21 +513,25 @@ async def enhance(
         try:
             img = await read_image(file)
 
-            # Thumbnail ke 1600
-            img.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+            # Thumbnail ke 800px (hindari CUDA OOM)
+            img.thumbnail((800, 800), Image.Resampling.LANCZOS)
             rgb_img = img.convert("RGB")
 
-            # Jalankan model enhance
-            pipe = model("enhance")
-            loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(None, pipe, rgb_img)
+            # Jalankan Swin2SR enhance langsung (bukan pipeline)
+            import torch
+            sr_model, processor, cuda_device = model("enhance")
 
-            if isinstance(result, list) and len(result) > 0:
-                out_img = result[0].get("image", result[0]) if isinstance(result[0], dict) else result[0]
-            elif isinstance(result, dict) and "image" in result:
-                out_img = result["image"]
-            else:
-                out_img = result
+            def _run_enhance(img_pil):
+                inputs = processor(img_pil, return_tensors="pt").pixel_values.to(cuda_device)
+                with torch.no_grad():
+                    outputs = sr_model(pixel_values=inputs)
+                sr_tensor = outputs.reconstruction.squeeze().cpu().clamp(0, 1)
+                import numpy as np
+                arr = (sr_tensor.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+                return Image.fromarray(arr)
+
+            loop = asyncio.get_running_loop()
+            out_img = await loop.run_in_executor(None, _run_enhance, rgb_img)
 
             if not isinstance(out_img, Image.Image):
                 raise ValueError("Output model tidak menghasilkan PIL Image yang valid.")

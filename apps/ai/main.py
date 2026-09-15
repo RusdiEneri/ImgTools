@@ -22,6 +22,7 @@ ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS_RAW.split(",") i
 MAX_PIXELS = int(os.getenv("MAX_PIXELS", 24_000_000))  # Default 24 Megapixels
 MAX_BYTES = int(os.getenv("MAX_BYTES", 25 * 1024 * 1024))  # Default 25 MB
 MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", 2))  # Default 2 concurrent requests
+REMBG_SPACE_URL = os.getenv("REMBG_SPACE_URL", "https://ilhamdev-rembg.hf.space").rstrip("/")
 
 # Semaphore untuk membatasi eksekusi serentak pada CPU/RAM terbatas
 concurrency_semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
@@ -43,7 +44,7 @@ def model(name: str):
     """
     Lazy-load dan cache model ML dalam dictionary.
     Mendukung:
-    - 'remove-bg' -> briaai/RMBG-1.4
+    - 'remove-bg' -> Hugging Face Space ilhamdev/rembg (ZeroGPU)
     - 'upscale'   -> caidas/swin2SR-realworld-sr-x4-64-bsrl (device=0 jika CUDA/ZeroGPU, -1 jika CPU)
     - 'enhance'   -> caidas/swin2SR-classical-sr-x2-64 (device=0 jika CUDA/ZeroGPU, -1 jika CPU)
     - 'face'      -> ultralytics YOLO("Bingsu/yolov8n-face")
@@ -53,79 +54,8 @@ def model(name: str):
         device = 0 if torch.cuda.is_available() else -1
         logger.info(f"Memuat model '{name}' ke memori (device={device})...")
         if name == "remove-bg":
-            # Load RMBG-1.4: buat proper package context agar relative import berhasil
-            # briarmbg.py menggunakan `from .MyConfig import ...` sehingga perlu
-            # dimuat sebagai bagian dari package, bukan modul standalone.
-            import torch, importlib.util, types, sys as _sys
-            from torchvision import transforms
-            from huggingface_hub import hf_hub_download
-
-            cuda_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-            # Coba AutoModelForImageSegmentation terlebih dulu
-            rmbg = None
-            try:
-                from transformers import AutoModelForImageSegmentation
-                rmbg = AutoModelForImageSegmentation.from_pretrained(
-                    "briaai/RMBG-1.4",
-                    trust_remote_code=True,
-                )
-                logger.info("RMBG-1.4 dimuat via AutoModelForImageSegmentation.")
-            except Exception as e:
-                logger.warning(f"AutoModel gagal ({e}), fallback ke BriaRMBG manual.")
-
-            if rmbg is None:
-                # Download KEDUA file (briarmbg.py butuh MyConfig.py via relative import)
-                briarmbg_path = hf_hub_download(repo_id="briaai/RMBG-1.4", filename="briarmbg.py")
-                myconfig_path = hf_hub_download(repo_id="briaai/RMBG-1.4", filename="MyConfig.py")
-                model_path    = hf_hub_download(repo_id="briaai/RMBG-1.4", filename="model.pth")
-
-                # Buat package virtual 'briaai_rmbg' di sys.modules
-                # sehingga `from .MyConfig import ...` di briarmbg.py dapat di-resolve
-                pkg_name = "briaai_rmbg"
-                if pkg_name not in _sys.modules:
-                    pkg = types.ModuleType(pkg_name)
-                    pkg.__path__ = []
-                    pkg.__package__ = pkg_name
-                    _sys.modules[pkg_name] = pkg
-
-                # Load MyConfig sebagai briaai_rmbg.MyConfig
-                mc_spec = importlib.util.spec_from_file_location(f"{pkg_name}.MyConfig", myconfig_path)
-                mc_mod  = importlib.util.module_from_spec(mc_spec)
-                mc_mod.__package__ = pkg_name
-                _sys.modules[f"{pkg_name}.MyConfig"] = mc_mod
-                mc_spec.loader.exec_module(mc_mod)
-
-                # Load briarmbg sebagai briaai_rmbg.briarmbg
-                br_spec = importlib.util.spec_from_file_location(f"{pkg_name}.briarmbg", briarmbg_path)
-                br_mod  = importlib.util.module_from_spec(br_spec)
-                br_mod.__package__ = pkg_name
-                _sys.modules[f"{pkg_name}.briarmbg"] = br_mod
-                br_spec.loader.exec_module(br_mod)
-
-                BriaRMBG = br_mod.BriaRMBG
-
-                # Load state dict ke dalam instance BriaRMBG
-                rmbg = BriaRMBG()
-                state_dict = torch.load(model_path, map_location="cpu", weights_only=False)
-                if isinstance(state_dict, dict):
-                    rmbg.load_state_dict(state_dict)
-                    logger.info("RMBG-1.4 dimuat via BriaRMBG + load_state_dict.")
-                else:
-                    rmbg = state_dict
-                    logger.info("RMBG-1.4 dimuat via torch.load (full model).")
-
-            rmbg = rmbg.to(cuda_device)
-            rmbg.eval()
-
-            preprocess = transforms.Compose([
-                transforms.Resize((1024, 1024)),
-                transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-            ])
-
-            _models[name] = (rmbg, preprocess, cuda_device)
-            logger.info("Model 'remove-bg' (briaai/RMBG-1.4) berhasil dimuat dan siap.")
+            _models[name] = REMBG_SPACE_URL
+            logger.info(f"Model 'remove-bg' dikonfigurasi ke Hugging Face Space: {REMBG_SPACE_URL}")
         elif name == "upscale":
             # Gunakan Swin2SR API langsung (bukan pipeline yang sering error dengan model ini)
             from transformers import Swin2SRForImageSuperResolution, Swin2SRImageProcessor
@@ -233,10 +163,10 @@ async def lifespan(app: FastAPI):
     """
     logger.info("Memulai layanan ImgTools AI...")
     try:
-        logger.info("Melakukan warm-up model 'remove-bg'...")
+        logger.info(f"Mengonfigurasi model 'remove-bg' (Space: {REMBG_SPACE_URL})...")
         model("remove-bg")
     except Exception as e:
-        logger.warning(f"Warm-up model ditangguhkan (akan dimuat saat request pertama): {e}")
+        logger.warning(f"Inisialisasi model 'remove-bg' ditangguhkan: {e}")
     yield
     logger.info("Mematikan layanan ImgTools AI...")
     _models.clear()
@@ -349,70 +279,69 @@ def root(request: Request):
 
 
 @app.post("/api/remove-bg")
-async def remove_background(file: UploadFile = File(...)):
+async def remove_background(
+    file: UploadFile = File(...),
+    model_name: str = Form("birefnet-portrait"),
+    alpha_matting: bool = Form(False),
+):
     """
-    Hapus latar belakang foto menggunakan model briaai/RMBG-1.4:
-    1. Baca dan validasi gambar masukan.
-    2. Resize sementara ke 1024x1024 untuk inferensi optimal model.
-    3. Ekstraksi mask segmentasi.
-    4. Resize mask kembali ke resolusi asli.
-    5. Pasang mask sebagai alpha channel pada gambar asli RGBA.
-    6. Kembalikan respons PNG transparan.
+    Hapus latar belakang foto menggunakan Hugging Face Space ilhamdev/rembg (ZeroGPU BiRefNet):
+    1. Baca dan validasi berkas gambar masukan.
+    2. Encode ke Base64 data URL.
+    3. Panggil API Space https://ilhamdev-rembg.hf.space/gradio_api/call/remove_bg.
+    4. Kembalikan respons PNG transparan.
     """
     async with concurrency_semaphore:
         try:
-            import torch
-            import numpy as np
-            from torchvision import transforms
+            import base64
+            import urllib.request
 
-            # Baca gambar asli
             orig_img = await read_image(file)
-            orig_w, orig_h = orig_img.size
+            buffered = io.BytesIO()
+            orig_img.save(buffered, format="PNG")
+            b64_input = base64.b64encode(buffered.getvalue()).decode("utf-8")
+            data_url = f"data:image/png;base64,{b64_input}"
 
-            # Konversi ke RGB
-            rgb_img = orig_img.convert("RGB")
+            space_url = REMBG_SPACE_URL
+            post_payload = json.dumps({
+                "data": [data_url, model_name, alpha_matting]
+            }).encode("utf-8")
 
-            # Ambil model, transform, device dari cache
-            rmbg, preprocess, cuda_device = model("remove-bg")
+            def _call_space():
+                req = urllib.request.Request(
+                    f"{space_url}/gradio_api/call/remove_bg",
+                    data=post_payload,
+                    headers={"Content-Type": "application/json"}
+                )
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    post_res = json.loads(resp.read().decode("utf-8"))
 
-            # Preprocessing: tensor shape [1, 3, 1024, 1024]
-            input_tensor = preprocess(rgb_img).unsqueeze(0).to(cuda_device)
+                event_id = post_res.get("event_id")
+                if not event_id:
+                    raise ValueError("Gagal mendapatkan event_id dari Hugging Face Space.")
 
-            # Inferensi (jalankan di executor agar tidak blokir event loop)
-            def _infer(inp):
-                with torch.no_grad():
-                    out = rmbg(inp)
-                # Output bisa berupa tuple, list, atau tensor
-                if isinstance(out, (tuple, list)):
-                    out = out[0]
-                if isinstance(out, (tuple, list)):
-                    out = out[0]
-                return out
+                stream_req = urllib.request.Request(f"{space_url}/gradio_api/call/remove_bg/{event_id}")
+                with urllib.request.urlopen(stream_req, timeout=120) as stream_resp:
+                    for line in stream_resp:
+                        decoded_line = line.decode("utf-8").strip()
+                        if decoded_line.startswith("event: error"):
+                            raise RuntimeError("Hugging Face Space mengembalikan event error.")
+                        if decoded_line.startswith("data:"):
+                            raw_data = decoded_line[5:].strip()
+                            if raw_data and raw_data != "null":
+                                parsed = json.loads(raw_data)
+                                if isinstance(parsed, list) and len(parsed) > 0 and parsed[0]:
+                                    return parsed[0]
+                raise ValueError("Tidak ada output gambar dari Hugging Face Space.")
 
             loop = asyncio.get_running_loop()
-            pred = await loop.run_in_executor(None, _infer, input_tensor)
+            res_data_url = await loop.run_in_executor(None, _call_space)
 
-            # Konversi tensor ke PIL mask grayscale
-            # BriaRMBG mengeluarkan logits — harus sigmoid dulu!
-            pred = pred.squeeze().cpu()  # shape: [H, W] atau [1, H, W]
-            if pred.dim() == 3:
-                pred = pred.squeeze(0)  # [H, W]
-
-            # Terapkan sigmoid untuk konversi logits → probabilitas [0, 1]
-            pred = torch.sigmoid(pred)
-
-            # Konversi ke numpy uint8 [0, 255]
-            mask_np = (pred.numpy() * 255).astype(np.uint8)
-            mask = Image.fromarray(mask_np, mode="L")
-
-            # Resize mask balik ke ukuran gambar asli
-            resized_mask = mask.resize((orig_w, orig_h), Image.Resampling.BILINEAR)
-
-            # Pasang mask sebagai alpha channel pada gambar asli
-            rgba_result = orig_img.convert("RGBA")
-            rgba_result.putalpha(resized_mask)
-
-            return png_response(rgba_result)
+            if "," in res_data_url:
+                res_data_url = res_data_url.split(",", 1)[1]
+            out_bytes = base64.b64decode(res_data_url)
+            out_buf = io.BytesIO(out_bytes)
+            return StreamingResponse(out_buf, media_type="image/png")
         except HTTPException:
             raise
         except Exception as e:

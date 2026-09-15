@@ -124,7 +124,37 @@ export async function resize(
 }
 
 /**
+ * Terapkan kuantisasi warna (color quantization) pada ImageData kanvas.
+ * Mengurangi variasi warna pada kanal RGB/A untuk meningkatkan rasio kompresi DEFLATE pada format PNG.
+ */
+function quantizeCanvas(canvas: HTMLCanvasElement, quality: number) {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const data = imgData.data;
+
+  // Jika kualitas sangat tinggi (>= 0.98), lewati kuantisasi
+  if (quality >= 0.98) return;
+
+  const step = Math.max(2, Math.round((1 - quality) * 32));
+  const halfStep = Math.floor(step / 2);
+
+  const len = data.length;
+  for (let i = 0; i < len; i += 4) {
+    data[i] = Math.min(255, Math.floor((data[i] + halfStep) / step) * step);
+    data[i + 1] = Math.min(255, Math.floor((data[i + 1] + halfStep) / step) * step);
+    data[i + 2] = Math.min(255, Math.floor((data[i + 2] + halfStep) / step) * step);
+    if (data[i + 3] > 0 && data[i + 3] < 255) {
+      data[i + 3] = Math.min(255, Math.floor((data[i + 3] + halfStep) / step) * step);
+    }
+  }
+
+  ctx.putImageData(imgData, 0, 0);
+}
+
+/**
  * Kompres gambar dengan slider kualitas atau target ukuran KB (binary search).
+ * Menjamin hasil kompresi tidak akan pernah lebih besar dari berkas aslinya.
  */
 export async function compress(
   file: File | Blob,
@@ -134,58 +164,162 @@ export async function compress(
     format?: string;
   } = {}
 ): Promise<Blob> {
+  const originalSize = file.size;
   const bitmap = await fileToBitmap(file);
-  const canvas = toCanvas(bitmap.width, bitmap.height);
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Gagal mendapatkan konteks 2D kanvas");
+  const origW = bitmap.width;
+  const origH = bitmap.height;
 
-  const targetFormat = options.format || file.type || "image/jpeg";
+  const inputMime = file.type || "image/jpeg";
+  let targetFormat = options.format || "auto";
 
-  // Jika format target JPEG, isi background putih untuk menangani transparansi
-  if (targetFormat === "image/jpeg") {
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  if (targetFormat === "auto" || targetFormat === "original") {
+    targetFormat = inputMime;
   }
-  ctx.drawImage(bitmap, 0, 0);
 
-  bitmap.close();
+  const isAuto = options.format === "auto" || !options.format;
+  const isPng = targetFormat === "image/png";
 
-  // Binary search kualitas jika target maxKB diisi
+  // Helper untuk membuat kanvas dan menggambar bitmap dengan skala tertentu
+  const makeCanvas = (scale = 1.0, isJpeg = false): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } => {
+    const w = Math.max(1, Math.round(origW * scale));
+    const h = Math.max(1, Math.round(origH * scale));
+    const canvas = toCanvas(w, h);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Gagal mendapatkan konteks 2D kanvas");
+
+    if (isJpeg) {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, w, h);
+    }
+
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    return { canvas, ctx };
+  };
+
+  // 1. Mode Target Ukuran KB
   if (options.maxKB !== undefined && options.maxKB > 0) {
     const targetBytes = options.maxKB * 1024;
-    // Format kompresi lossy: jika input PNG dan user ingin batas KB, gunakan JPEG atau WEBP
-    const lossyFormat =
-      targetFormat === "image/png" ? "image/jpeg" : targetFormat;
+    bitmap.close();
 
+    // Jika target sudah lebih besar dari file asli, pertahankan file asli
+    if (originalSize <= targetBytes && !options.format) {
+      return file;
+    }
+
+    let activeFormat = targetFormat;
+    if (isPng && isAuto) {
+      activeFormat = "image/webp";
+    } else if (isPng && targetFormat === "image/png") {
+      for (const scale of [1.0, 0.85, 0.7, 0.5, 0.35]) {
+        for (const q of [0.75, 0.5, 0.25, 0.1]) {
+          const { canvas } = makeCanvas(scale, false);
+          quantizeCanvas(canvas, q);
+          const candidate = await canvasToBlob(canvas, "image/png");
+          if (candidate.size <= targetBytes) {
+            return candidate;
+          }
+        }
+      }
+      if (isAuto) activeFormat = "image/webp";
+    }
+
+    // Binary search kualitas
     let low = 0.05;
     let high = 0.98;
     let bestBlob: Blob | null = null;
 
+    const isJpeg = activeFormat === "image/jpeg";
+    const { canvas } = makeCanvas(1.0, isJpeg);
+
     for (let i = 0; i < 8; i++) {
       const mid = (low + high) / 2;
-      const currentBlob = await canvasToBlob(canvas, lossyFormat, mid);
+      const currentBlob = await canvasToBlob(canvas, activeFormat, mid);
       if (currentBlob.size <= targetBytes) {
         bestBlob = currentBlob;
-        low = mid; // Coba kualitas lebih baik yang tetap di bawah batas
+        low = mid;
       } else {
-        high = mid; // Terlalu besar, turunkan kualitas
+        high = mid;
       }
     }
 
-    if (!bestBlob) {
-      bestBlob = await canvasToBlob(canvas, lossyFormat, 0.05);
+    // Jika kualitas 0.05 masih melebihi batas, lakukan downscale bertahap
+    if (!bestBlob || bestBlob.size > targetBytes) {
+      for (const scale of [0.8, 0.6, 0.45, 0.3]) {
+        const { canvas: scaledCanvas } = makeCanvas(scale, isJpeg);
+        const candidate = await canvasToBlob(scaledCanvas, activeFormat, 0.6);
+        if (candidate.size <= targetBytes) {
+          bestBlob = candidate;
+          break;
+        }
+      }
     }
-    return bestBlob;
+
+    if (bestBlob && bestBlob.size < originalSize) {
+      return bestBlob;
+    }
+
+    return originalSize <= (bestBlob?.size ?? Infinity) ? file : (bestBlob ?? file);
   }
 
-  // Jika kualitas manual ditentukan
+  // 2. Mode Slider Kualitas
   let q = 0.85;
   if (options.quality !== undefined) {
     q = options.quality > 1 ? options.quality / 100 : options.quality;
     q = Math.max(0.01, Math.min(1, q));
   }
 
-  return canvasToBlob(canvas, targetFormat, q);
+  let resultBlob: Blob;
+
+  if (targetFormat === "image/jpeg") {
+    const { canvas } = makeCanvas(1.0, true);
+    resultBlob = await canvasToBlob(canvas, "image/jpeg", q);
+    bitmap.close();
+  } else if (targetFormat === "image/webp") {
+    const { canvas } = makeCanvas(1.0, false);
+    resultBlob = await canvasToBlob(canvas, "image/webp", q);
+    bitmap.close();
+  } else {
+    // targetFormat === "image/png"
+    const { canvas } = makeCanvas(1.0, false);
+    quantizeCanvas(canvas, q);
+    resultBlob = await canvasToBlob(canvas, "image/png");
+
+    // Jika hasil PNG malah lebih besar dari file asli:
+    if (resultBlob.size >= originalSize) {
+      // Coba skala dimensi sedikit jika user meminta kualitas < 0.9
+      if (q < 0.9) {
+        for (const scale of [0.9, 0.8, 0.7]) {
+          const { canvas: sCanvas } = makeCanvas(scale, false);
+          quantizeCanvas(sCanvas, q);
+          const candidate = await canvasToBlob(sCanvas, "image/png");
+          if (candidate.size < originalSize) {
+            resultBlob = candidate;
+            break;
+          }
+        }
+      }
+
+      // Jika format "auto" dan PNG tetap tidak bisa lebih kecil:
+      if (isAuto && resultBlob.size >= originalSize) {
+        const { canvas: wCanvas } = makeCanvas(1.0, false);
+        const webpCandidate = await canvasToBlob(wCanvas, "image/webp", q);
+        if (webpCandidate.size < originalSize) {
+          resultBlob = webpCandidate;
+        }
+      }
+    }
+
+    bitmap.close();
+  }
+
+  // ATURAN EMAS: Hasil kompresi TIDAK BOLEH lebih besar dari berkas asli!
+  if (resultBlob.size >= originalSize) {
+    return file;
+  }
+
+  return resultBlob;
 }
 
 /**

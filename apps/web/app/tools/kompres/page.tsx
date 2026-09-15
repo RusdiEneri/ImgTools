@@ -6,6 +6,8 @@ import Dropzone from "@/components/Dropzone";
 import { compress, download, formatBytes } from "@/lib/image";
 import { processQueue, downloadZip, BatchProgress } from "@/lib/batch";
 
+type OutputFormat = "auto" | "original" | "image/webp" | "image/jpeg" | "image/png";
+
 interface CompressItem {
   id: string;
   file: File;
@@ -17,6 +19,14 @@ interface CompressItem {
   errorMsg?: string;
 }
 
+function getExtensionForBlob(blob: Blob, originalName: string): string {
+  if (blob.type === "image/webp") return ".webp";
+  if (blob.type === "image/jpeg") return ".jpg";
+  if (blob.type === "image/png") return ".png";
+  const dotIndex = originalName.lastIndexOf(".");
+  return dotIndex !== -1 ? originalName.substring(dotIndex) : ".jpg";
+}
+
 export default function KompresPage() {
   const [items, setItems] = useState<CompressItem[]>([]);
 
@@ -24,6 +34,7 @@ export default function KompresPage() {
   const [mode, setMode] = useState<"quality" | "targetKB">("quality");
   const [quality, setQuality] = useState<number>(75);
   const [targetKB, setTargetKB] = useState<number>(200);
+  const [outputFormat, setOutputFormat] = useState<OutputFormat>("auto");
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState<BatchProgress | null>(null);
@@ -49,7 +60,6 @@ export default function KompresPage() {
   // Proses kompresi satu berkas
   const processOne = async (item: CompressItem): Promise<CompressItem> => {
     try {
-      const outputFormat = item.file.type || "image/jpeg";
       let result: Blob;
 
       if (mode === "quality") {
@@ -92,7 +102,6 @@ export default function KompresPage() {
       await processQueue(
         items,
         async (item, idx) => {
-          // Update status item ke processing
           setItems((prev) =>
             prev.map((it, i) => (i === idx ? { ...it, status: "processing" } : it))
           );
@@ -121,7 +130,7 @@ export default function KompresPage() {
     if (!item.resultBlob) return;
     const dotIndex = item.file.name.lastIndexOf(".");
     const baseName = dotIndex !== -1 ? item.file.name.substring(0, dotIndex) : item.file.name;
-    const ext = dotIndex !== -1 ? item.file.name.substring(dotIndex) : ".jpg";
+    const ext = getExtensionForBlob(item.resultBlob, item.file.name);
     download(item.resultBlob, `${baseName}-terkompres${ext}`);
   };
 
@@ -133,7 +142,7 @@ export default function KompresPage() {
     const filesToZip = readyItems.map((item) => {
       const dotIndex = item.file.name.lastIndexOf(".");
       const baseName = dotIndex !== -1 ? item.file.name.substring(0, dotIndex) : item.file.name;
-      const ext = dotIndex !== -1 ? item.file.name.substring(dotIndex) : ".jpg";
+      const ext = getExtensionForBlob(item.resultBlob as Blob, item.file.name);
       return {
         name: `${baseName}-terkompres${ext}`,
         blob: item.resultBlob as Blob,
@@ -166,7 +175,7 @@ export default function KompresPage() {
   return (
     <ToolShell
       title="Kompres Gambar"
-      description="Kecilkan ukuran berkas gambar tanpa mengurangi kualitas secara signifikan. Mendukung pemrosesan batch banyak gambar sekaligus."
+      description="Kecilkan ukuran berkas gambar tanpa mengurangi kualitas secara signifikan. Menjamin ukuran berkas tidak akan membengkak."
       badge="Di browser"
     >
       <div className="space-y-6">
@@ -278,6 +287,37 @@ export default function KompresPage() {
                   </div>
                 </div>
               )}
+
+              {/* Pilihan Format Hasil */}
+              <div className="pt-3 border-t border-slate-200/70 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="space-y-0.5">
+                  <label htmlFor="format-select" className="text-xs font-semibold text-slate-700 block">
+                    Format Berkas Hasil:
+                  </label>
+                  <p className="text-[11px] text-slate-500 leading-normal">
+                    {outputFormat === "auto" && "Otomatis memilih format paling optimal agar ukuran selalu mengecil tanpa mengorbankan transparansi."}
+                    {outputFormat === "original" && "Pertahankan format asli berkas (PNG tetap PNG dengan kuantisasi warna, JPG tetap JPG)."}
+                    {outputFormat === "image/webp" && "WebP: Format modern dengan kompresi sangat hemat dan mendukung transparansi penuh."}
+                    {outputFormat === "image/jpeg" && "JPG: Kompresi tinggi standar foto (latar transparan menjadi putih)."}
+                    {outputFormat === "image/png" && "PNG: Format PNG dengan optimasi kuantisasi palet warna."}
+                  </p>
+                </div>
+
+                <div className="self-start sm:self-center shrink-0">
+                  <select
+                    id="format-select"
+                    value={outputFormat}
+                    onChange={(e) => setOutputFormat(e.target.value as OutputFormat)}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 shadow-xs focus:border-indigo-500 focus:outline-hidden"
+                  >
+                    <option value="auto">Otomatis (Optimal)</option>
+                    <option value="original">Format Asli</option>
+                    <option value="image/webp">WEBP (Sangat Hemat)</option>
+                    <option value="image/jpeg">JPG</option>
+                    <option value="image/png">PNG</option>
+                  </select>
+                </div>
+              </div>
             </div>
 
             {/* Progress Global Bar */}
@@ -300,7 +340,7 @@ export default function KompresPage() {
             <div className="divide-y divide-slate-100 max-h-[380px] overflow-y-auto rounded-xl border border-slate-200">
               {items.map((item, idx) => {
                 const saved = item.originalSize > 0 && item.newSize > 0
-                  ? Math.round(((item.originalSize - item.newSize) / item.originalSize) * 100)
+                  ? Math.max(0, Math.round(((item.originalSize - item.newSize) / item.originalSize) * 100))
                   : 0;
 
                 return (
@@ -324,9 +364,15 @@ export default function KompresPage() {
                               <span className="font-semibold text-emerald-700">
                                 {formatBytes(item.newSize)}
                               </span>
-                              <span className="rounded bg-emerald-100 px-1.5 py-0.2 font-bold text-emerald-800 text-[10px]">
-                                Hemat {saved}%
-                              </span>
+                              {saved > 0 ? (
+                                <span className="rounded bg-emerald-100 px-1.5 py-0.5 font-bold text-emerald-800 text-[10px]">
+                                  Hemat {saved}%
+                                </span>
+                              ) : (
+                                <span className="rounded bg-slate-100 px-1.5 py-0.5 font-semibold text-slate-700 text-[10px]">
+                                  Ukuran Optimal (0%)
+                                </span>
+                              )}
                             </>
                           )}
                           {item.status === "error" && (

@@ -26,6 +26,15 @@ MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", 2))  # Default 2 concurrent r
 # Semaphore untuk membatasi eksekusi serentak pada CPU/RAM terbatas
 concurrency_semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
 
+# Dukungan ZeroGPU jika berjalan pada Hugging Face Spaces dengan SDK Gradio
+try:
+    import spaces
+    def gpu_decorator(fn):
+        return spaces.GPU(fn)
+except Exception:
+    def gpu_decorator(fn):
+        return fn
+
 # Cache penyimpanan model ML (Lazy-loaded)
 _models: Dict[str, Any] = {}
 
@@ -35,18 +44,21 @@ def model(name: str):
     Lazy-load dan cache model ML dalam dictionary.
     Mendukung:
     - 'remove-bg' -> briaai/RMBG-1.4
-    - 'upscale'   -> caidas/swin2SR-realworld-sr-x4-64-bsrl (device=-1)
-    - 'enhance'   -> caidas/swin2SR-classical-sr-x2-64 (device=-1)
+    - 'upscale'   -> caidas/swin2SR-realworld-sr-x4-64-bsrl (device=0 jika CUDA/ZeroGPU, -1 jika CPU)
+    - 'enhance'   -> caidas/swin2SR-classical-sr-x2-64 (device=0 jika CUDA/ZeroGPU, -1 jika CPU)
     - 'face'      -> ultralytics YOLO("Bingsu/yolov8n-face")
     """
     if name not in _models:
-        logger.info(f"Memuat model '{name}' ke memori...")
+        import torch
+        device = 0 if torch.cuda.is_available() else -1
+        logger.info(f"Memuat model '{name}' ke memori (device={device})...")
         if name == "remove-bg":
             from transformers import pipeline
 
             _models[name] = pipeline(
                 "image-segmentation",
                 model="briaai/RMBG-1.4",
+                device=device,
                 trust_remote_code=True,
             )
             logger.info("Model 'remove-bg' (briaai/RMBG-1.4) berhasil dimuat.")
@@ -56,7 +68,7 @@ def model(name: str):
             _models[name] = pipeline(
                 "image-to-image",
                 model="caidas/swin2SR-realworld-sr-x4-64-bsrl",
-                device=-1,
+                device=device,
             )
             logger.info("Model 'upscale' (caidas/swin2SR-realworld-sr-x4-64-bsrl) berhasil dimuat.")
         elif name == "enhance":
@@ -65,13 +77,16 @@ def model(name: str):
             _models[name] = pipeline(
                 "image-to-image",
                 model="caidas/swin2SR-classical-sr-x2-64",
-                device=-1,
+                device=device,
             )
             logger.info("Model 'enhance' (caidas/swin2SR-classical-sr-x2-64) berhasil dimuat.")
         elif name == "face":
             from ultralytics import YOLO
 
-            _models[name] = YOLO("Bingsu/yolov8n-face")
+            yolo_model = YOLO("Bingsu/yolov8n-face")
+            if torch.cuda.is_available():
+                yolo_model.to("cuda")
+            _models[name] = yolo_model
             logger.info("Model 'face' (Bingsu/yolov8n-face) berhasil dimuat.")
         else:
             raise ValueError(f"Model '{name}' tidak didukung.")
@@ -169,10 +184,11 @@ app = FastAPI(
 )
 
 # Konfigurasi CORS
+is_wildcard = "*" in ALLOWED_ORIGINS or len(ALLOWED_ORIGINS) == 0 or "http://localhost:3000" in ALLOWED_ORIGINS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS else ["*"],
-    allow_credentials=True,
+    allow_origins=["*"] if is_wildcard else ALLOWED_ORIGINS,
+    allow_credentials=False if is_wildcard else True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

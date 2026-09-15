@@ -3,9 +3,10 @@ title: ImgTools AI
 emoji: 🖼️
 colorFrom: indigo
 colorTo: pink
-sdk: docker
+sdk: gradio
+app_file: app.py
 app_port: 7860
-hardware: cpu-basic
+hardware: zero-a10g
 license: mit
 ---
 

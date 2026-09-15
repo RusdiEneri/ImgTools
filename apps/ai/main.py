@@ -132,11 +132,11 @@ def model(name: str):
             import torch
 
             cuda_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            processor = Swin2SRImageProcessor.from_pretrained("caidas/swin2SR-realworld-sr-x4-64-bsrl-conv")
-            sr_model  = Swin2SRForImageSuperResolution.from_pretrained("caidas/swin2SR-realworld-sr-x4-64-bsrl-conv")
+            processor = Swin2SRImageProcessor.from_pretrained("caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr")
+            sr_model  = Swin2SRForImageSuperResolution.from_pretrained("caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr")
             sr_model  = sr_model.to(cuda_device).eval()
             _models[name] = (sr_model, processor, cuda_device)
-            logger.info("Model 'upscale' (swin2SR-realworld-sr-x4-64-bsrl-conv) berhasil dimuat.")
+            logger.info("Model 'upscale' (swin2SR-realworld-sr-x4-64-bsrgan-psnr) berhasil dimuat.")
         elif name == "enhance":
             from transformers import Swin2SRForImageSuperResolution, Swin2SRImageProcessor
             import torch
